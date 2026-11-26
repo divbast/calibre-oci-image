@@ -9,6 +9,7 @@ package reload
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,6 +22,14 @@ import (
 // asked for in 360 s (expire_old_jobs, in src/calibre/srv/convert.py),
 // and then never writes its new format.
 const abandonedAfter = 360 * time.Second
+
+// reconnectTimeout is how long a reconnect of Calibre-Web may take, as
+// long as a read of its login header setting: one that hangs then fails,
+// and the next change reconnects again.
+const reconnectTimeout = 10 * time.Second
+
+// errReconnectTimeout is why a reconnect that took too long was given up.
+var errReconnectTimeout = fmt.Errorf("no answer within %s", reconnectTimeout)
 
 // The reasons a refused request on port 8080 is given.
 const (
@@ -90,7 +99,10 @@ type Options struct {
 // app is starting, or being reloaded, the change is that app's own, and
 // reloads nothing: an app's own start lasts until Window after its port
 // first accepts a connection, and Calibre-Web's reconnect until Window
-// after it ends. Otherwise both apps are reloaded.
+// after it ends. Otherwise both apps are reloaded. A start, or a reload,
+// reads the library as it is when it begins: within its own time, a write
+// the other app ended before then no longer counts, and a start drops a
+// reload of that app still to come.
 //
 // A reload waits until the library has gone Quiet long without a change.
 // A restart of calibre-server also waits until no request to it is open
@@ -119,6 +131,7 @@ type Coordinator struct {
 	quietAt      time.Time    // when the library will have gone Quiet long unchanged
 	quiet        bool         // it has, since the last change
 	restarting   bool         // from a restart's call until the port accepts again
+	restartFrom  int          // calibre-server's starts when the restart was called
 	reconnecting bool         // a reconnect is under way
 	timer        Timer
 	timerAt      time.Time
@@ -131,6 +144,8 @@ type appState struct {
 	writes    int       // those of them that can change the library
 	wroteAt   time.Time // when the last of those ended
 	starting  bool      // started, and its port has not accepted since
+	starts    int       // how many times it was started
+	loadedAt  time.Time // when its latest start, or reload, began
 	reloading bool      // a reconnect of Calibre-Web is under way
 	ownUntil  time.Time // when its own start, or reload, ends
 }
@@ -211,7 +226,8 @@ func (c *Coordinator) DBChanged(at time.Time) {
 	c.mu.Lock()
 	now := c.clk.Now()
 	c.prune(now)
-	editors, own := c.editors(at), c.own(at)
+	own := c.own(at)
+	editors := c.editors(at, own)
 	var reload [2]bool
 	switch {
 	case editors[ContentServer] || editors[CalibreWeb]:
@@ -277,12 +293,19 @@ func (c *Coordinator) ConversionDone(jobID int) {
 	c.do(acts)
 }
 
-// Started tells the Coordinator that the supervisor started app. For
+// Started tells the Coordinator that the supervisor started app, and
+// returns the start's number, for Accepting. The new process reads the
+// library as it is, so a reload of app still to come is dropped. For
 // calibre-server, the conversions it ran ended with it.
-func (c *Coordinator) Started(app App) {
+func (c *Coordinator) Started(app App) (start int) {
 	c.mu.Lock()
 	now := c.clk.Now()
-	c.apps[app].starting = true
+	a := &c.apps[app]
+	a.starting = true
+	a.starts++
+	a.loadedAt = later(a.loadedAt, now)
+	c.want[app] = false
+	start = a.starts
 	if app == ContentServer {
 		clear(c.jobs)
 		c.unread = nil
@@ -290,15 +313,21 @@ func (c *Coordinator) Started(app App) {
 	acts := c.step(now)
 	c.mu.Unlock()
 	c.do(acts)
+	return start
 }
 
 // Accepting tells the Coordinator that app's loopback port accepted a
-// connection, for the first time since app was last started. A restart of
-// calibre-server ends there.
-func (c *Coordinator) Accepting(app App) {
+// connection, for the first time since its start numbered start. A restart
+// of calibre-server ends there, when start is the restart's own. An
+// Accepting for a start that a later one has replaced changes nothing.
+func (c *Coordinator) Accepting(app App, start int) {
 	c.mu.Lock()
 	now := c.clk.Now()
 	a := &c.apps[app]
+	if start != a.starts || (app == ContentServer && c.restarting && start <= c.restartFrom) {
+		c.mu.Unlock()
+		return
+	}
 	a.starting = false
 	a.ownUntil = later(a.ownUntil, now.Add(c.o.Window))
 	if app == ContentServer {
@@ -328,22 +357,35 @@ func (c *Coordinator) Gate(app App, method, path string) (deny bool, retryAfter 
 	return false, 0, ""
 }
 
-// editors is the apps a change seen at at is put down to. The caller holds
-// the lock.
-func (c *Coordinator) editors(at time.Time) (set [2]bool) {
+// editors is the apps a change seen at at is put down to, own being the
+// apps whose own start or reload at falls in. The caller holds the lock.
+func (c *Coordinator) editors(at time.Time, own [2]bool) (set [2]bool) {
 	for app := range c.apps {
 		a := &c.apps[app]
-		set[app] = a.writes > 0 || at.Sub(a.wroteAt) <= c.o.Window
+		set[app] = a.writes > 0 || c.counts(App(app), a.wroteAt, at, own)
 	}
 	if c.converting(at) {
 		set[ContentServer] = true
 	}
 	for _, j := range c.jobs {
-		if !j.running && at.Sub(j.doneAt) <= c.o.Window {
+		if !j.running && c.counts(ContentServer, j.doneAt, at, own) {
 			set[ContentServer] = true
 		}
 	}
 	return set
+}
+
+// counts reports whether a write of app that ended at ended still counts
+// for a change seen at at: it ended at most Window before, and, when at
+// falls in the other app's own start or reload, after that began, since
+// what began then reads the library with the write in it. The caller holds
+// the lock.
+func (c *Coordinator) counts(app App, ended, at time.Time, own [2]bool) bool {
+	reloaded := app.other()
+	if own[reloaded] && ended.Before(c.apps[reloaded].loadedAt) {
+		return false
+	}
+	return at.Sub(ended) <= c.o.Window
 }
 
 // own is the apps whose own start, or reload, a change seen at at falls
@@ -404,6 +446,7 @@ func (c *Coordinator) step(now time.Time) (acts actions) {
 		c.want[CalibreWeb] = false
 		c.reconnecting = true
 		c.apps[CalibreWeb].reloading = true
+		c.apps[CalibreWeb].loadedAt = now
 		acts.reconnect = true
 	}
 	if c.want[ContentServer] && !c.restarting {
@@ -412,7 +455,9 @@ func (c *Coordinator) step(now time.Time) (acts actions) {
 		if capped || (c.quiet && idle) {
 			c.want[ContentServer] = false
 			c.restarting = true
+			c.restartFrom = c.apps[ContentServer].starts
 			c.apps[ContentServer].starting = true
+			c.apps[ContentServer].loadedAt = now
 			acts.restart = true
 		}
 	}
@@ -484,7 +529,14 @@ func (c *Coordinator) do(acts actions) {
 }
 
 func (c *Coordinator) reconnect() {
-	err := c.r.ReconnectCalibreWeb(c.ctx)
+	ctx, cancel := context.WithCancelCause(c.ctx)
+	timer := c.clk.AfterFunc(reconnectTimeout, func() { cancel(errReconnectTimeout) })
+	err := c.r.ReconnectCalibreWeb(ctx)
+	timer.Stop()
+	if errors.Is(context.Cause(ctx), errReconnectTimeout) {
+		err = errReconnectTimeout
+	}
+	cancel(nil)
 	if err != nil && c.ctx.Err() == nil {
 		c.logf("reconnecting Calibre-Web to the library failed: %v", err)
 	}

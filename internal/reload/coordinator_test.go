@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -160,8 +161,7 @@ func newHarness(t *testing.T) *harness {
 // lets their own starts pass.
 func (h *harness) running() {
 	for _, app := range []App{ContentServer, CalibreWeb} {
-		h.c.Started(app)
-		h.c.Accepting(app)
+		h.c.Accepting(app, h.c.Started(app))
 	}
 	h.clk.Advance(time.Minute)
 }
@@ -525,9 +525,9 @@ func TestGate(t *testing.T) {
 	gate(http.MethodPost, write, true, runningReason)
 	gate(http.MethodGet, read, true, runningReason)
 
-	h.c.Started(ContentServer)
+	start := h.c.Started(ContentServer)
 	gate(http.MethodGet, read, true, runningReason)
-	h.c.Accepting(ContentServer)
+	h.c.Accepting(ContentServer, start)
 	gate(http.MethodPost, write, false, "")
 	gate(http.MethodGet, read, false, "")
 }
@@ -587,11 +587,11 @@ func TestOwnStartNotAReload(t *testing.T) {
 			t.Parallel()
 			h := newHarness(t)
 			h.running()
-			h.c.Started(app)
+			start := h.c.Started(app)
 			h.change()
 			h.clk.Advance(time.Minute)
 			h.change()
-			h.c.Accepting(app)
+			h.c.Accepting(app, start)
 			h.clk.Advance(9900 * time.Millisecond)
 			h.change()
 			h.clk.Advance(time.Hour)
@@ -606,26 +606,23 @@ func TestOwnStartNotAReload(t *testing.T) {
 		t.Parallel()
 		h := newHarness(t)
 		h.running()
+		var start int
 		h.r.during = func(app App) {
 			if app != ContentServer {
 				return
 			}
 			// What a restart does: it ends, writing as it closes, and starts,
-			// writing as it opens
+			// writing as it opens; all within 10 s of the write that called
+			// for it
 			h.change()
-			h.c.Started(ContentServer)
+			start = h.c.Started(ContentServer)
 			h.change()
 		}
 		h.write(CalibreWeb)
-		// A read keeps the restart waiting until Calibre-Web's write is
-		// more than 10 s old, so the restart's own writes are put down to
-		// no request
-		done := h.c.RequestStarted(ContentServer, http.MethodGet, "/ajax/books")
-		h.clk.Advance(11 * time.Second)
-		done(http.StatusOK)
+		h.clk.Advance(5 * time.Second)
 		h.expect(0, 1)
 		h.change()
-		h.c.Accepting(ContentServer)
+		h.c.Accepting(ContentServer, start)
 		h.clk.Advance(9 * time.Second)
 		h.change()
 		h.clk.Advance(time.Hour)
@@ -637,13 +634,12 @@ func TestOwnStartNotAReload(t *testing.T) {
 		h.running()
 		h.r.during = func(app App) {
 			if app == CalibreWeb {
-				// Past calibre-server's write by more than 10 s
-				h.clk.Advance(6 * time.Second)
-				h.change()
+				h.change() // within 10 s of calibre-server's write
 			}
 		}
 		h.write(ContentServer)
-		h.clk.Advance(6 * time.Second) // reconnects at 5 s, and writes 6 s into it
+		h.clk.Advance(5 * time.Second)
+		h.expect(1, 0)
 		h.clk.Advance(9 * time.Second)
 		h.change()
 		h.clk.Advance(time.Hour)
@@ -668,8 +664,7 @@ func TestRestartClearsConversions(t *testing.T) {
 	h := newHarness(t)
 	h.running()
 	h.c.ConversionStarted(5)
-	h.c.Started(ContentServer)
-	h.c.Accepting(ContentServer)
+	h.c.Accepting(ContentServer, h.c.Started(ContentServer))
 	h.clk.Advance(time.Minute)
 	h.write(CalibreWeb)
 	h.clk.Advance(6 * time.Second)
@@ -708,3 +703,169 @@ func (failingReloader) RestartContentServer(context.Context) error {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// TestCrashWhilePending is an app that ends on its own and is started
+// again while a reload of it is to come, or while one runs: its new
+// process reads the library as it is, so that start is the only one, and
+// no other reload follows.
+func TestCrashWhilePending(t *testing.T) {
+	t.Parallel()
+	t.Run("calibre-server, 2 s after the change", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		h.write(CalibreWeb)
+		h.clk.Advance(2 * time.Second)
+		start := h.c.Started(ContentServer)
+		h.change() // the new process writes as it opens
+		h.clk.Advance(time.Second)
+		h.c.Accepting(ContentServer, start)
+		h.clk.Advance(time.Hour)
+		h.expect(0, 0)
+	})
+	t.Run("calibre-server, 7 s after the first change", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		h.write(CalibreWeb)
+		h.clk.Advance(3 * time.Second)
+		h.write(CalibreWeb) // the restart is due 5 s after this, at 8 s
+		h.clk.Advance(4 * time.Second)
+		start := h.c.Started(ContentServer)
+		h.clk.Advance(2 * time.Second)
+		h.c.Accepting(ContentServer, start)
+		h.clk.Advance(time.Hour)
+		h.expect(0, 0)
+	})
+	t.Run("Calibre-Web, 2 s after the change", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		h.write(ContentServer)
+		h.clk.Advance(2 * time.Second)
+		start := h.c.Started(CalibreWeb)
+		h.clk.Advance(time.Second)
+		h.c.Accepting(CalibreWeb, start)
+		h.clk.Advance(time.Hour)
+		h.expect(0, 0)
+	})
+}
+
+// TestGateHoldsUntilTheNewStart is a restart of a calibre-server that was
+// still starting: the process being stopped may yet accept a connection,
+// but port 8080 refuses every request until the process the restart
+// starts accepts.
+func TestGateHoldsUntilTheNewStart(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.running()
+	slow := h.c.Started(ContentServer) // a start that has not accepted yet
+	h.clk.Advance(time.Minute)
+	h.write(CalibreWeb)
+	h.clk.Advance(5 * time.Second)
+	h.expect(0, 1)
+	refused := func() bool {
+		deny, _, _ := h.c.Gate(ContentServer, http.MethodGet, "/ajax/books")
+		return deny
+	}
+	h.c.Accepting(ContentServer, slow) // the process being stopped
+	if !refused() {
+		t.Error("port 8080 serves once the process being stopped accepts")
+	}
+	h.clk.Advance(2 * time.Second)
+	start := h.c.Started(ContentServer)
+	if !refused() {
+		t.Error("port 8080 serves before the new process accepts")
+	}
+	h.c.Accepting(ContentServer, slow)
+	if !refused() {
+		t.Error("port 8080 serves after an Accepting of an earlier start")
+	}
+	h.c.Accepting(ContentServer, start)
+	if refused() {
+		t.Error("port 8080 refuses requests once the new process accepts")
+	}
+	h.clk.Advance(time.Hour)
+	h.expect(0, 1)
+}
+
+// hangingReloader is a Calibre-Web whose first reconnect never answers.
+type hangingReloader struct {
+	entered chan struct{}
+	calls   atomic.Int32
+}
+
+func (r *hangingReloader) ReconnectCalibreWeb(ctx context.Context) error {
+	n := r.calls.Add(1)
+	r.entered <- struct{}{}
+	if n == 1 {
+		<-ctx.Done()
+		return context.Cause(ctx)
+	}
+	return nil
+}
+
+func (*hangingReloader) RestartContentServer(context.Context) error { return nil }
+
+// lineLog is a log that tells of each line.
+type lineLog struct {
+	mu    sync.Mutex
+	b     bytes.Buffer
+	lines chan struct{}
+}
+
+func (l *lineLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n, err := l.b.Write(p)
+	l.lines <- struct{}{}
+	return n, err
+}
+
+func (l *lineLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// TestReconnectTimeout is a Calibre-Web that does not answer its
+// reconnect: the reconnect fails 10 s on, with one line, and a later change
+// reconnects again.
+func TestReconnectTimeout(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	r := &hangingReloader{entered: make(chan struct{}, 4)}
+	log := &lineLog{lines: make(chan struct{}, 4)}
+	h.c.r, h.c.logw = r, log
+	h.c.spawn = func(f func()) { go f() }
+	h.running()
+	wait := func(ch <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s did not happen", what)
+		}
+	}
+
+	h.write(ContentServer)
+	h.clk.Advance(5 * time.Second)
+	wait(r.entered, "the reconnect")
+	h.clk.Advance(9900 * time.Millisecond)
+	if got := log.String(); got != "" {
+		t.Fatalf("the reconnect ended before 10 s: %q", got)
+	}
+	h.clk.Advance(100 * time.Millisecond)
+	wait(log.lines, "the reconnect's failure")
+	if want := "divbast-calibre: reconnecting Calibre-Web to the library failed: no answer within 10s\n"; log.String() != want {
+		t.Errorf("log = %q, want %q", log.String(), want)
+	}
+
+	h.clk.Advance(time.Minute)
+	h.write(ContentServer)
+	h.clk.Advance(5 * time.Second)
+	wait(r.entered, "the next reconnect")
+	if n := r.calls.Load(); n != 2 {
+		t.Errorf("%d reconnects, want 2", n)
+	}
+}

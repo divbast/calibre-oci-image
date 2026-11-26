@@ -414,8 +414,8 @@ func (r *reloader) RestartContentServer(context.Context) error {
 
 // starts is what the tracker tells the Coordinator.
 type starts interface {
-	Started(app reload.App)
-	Accepting(app reload.App)
+	Started(app reload.App) (start int)
+	Accepting(app reload.App, start int)
 }
 
 // tracker keeps the state file in step with the supervisor, and tells the
@@ -458,7 +458,7 @@ func (t *tracker) change(name string, st supervise.State) {
 	if name == reload.CalibreWeb.String() {
 		app, addr = reload.CalibreWeb, calibreWebAddr
 	}
-	t.apps.Started(app)
+	start := t.apps.Started(app)
 	if stop := t.polls[name]; stop != nil {
 		stop()
 	}
@@ -466,7 +466,7 @@ func (t *tracker) change(name string, st supervise.State) {
 	t.polls[name] = stop
 	go func() {
 		if t.wait(ctx, addr, watchEvery) == nil {
-			t.apps.Accepting(app)
+			t.apps.Accepting(app, start)
 		}
 	}()
 }

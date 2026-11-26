@@ -291,16 +291,25 @@ func TestReconnect(t *testing.T) {
 type fakeStarts struct {
 	mu        sync.Mutex
 	started   []reload.App
-	accepting chan reload.App
+	accepting chan accepted
 }
 
-func (f *fakeStarts) Started(app reload.App) {
+func (f *fakeStarts) Started(app reload.App) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.started = append(f.started, app)
+	return len(f.started)
 }
 
-func (f *fakeStarts) Accepting(app reload.App) { f.accepting <- app }
+func (f *fakeStarts) Accepting(app reload.App, start int) {
+	f.accepting <- accepted{app, start}
+}
+
+// accepted is one Accepting call.
+type accepted struct {
+	app   reload.App
+	start int
+}
 
 // TestTracker is the state file and the starts: the file holds both apps
 // down at first, and each change after; each start, and only a start, is
@@ -308,7 +317,7 @@ func (f *fakeStarts) Accepting(app reload.App) { f.accepting <- app }
 func TestTracker(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "divbast-calibre", "state.json")
-	f := &fakeStarts{accepting: make(chan reload.App, 4)}
+	f := &fakeStarts{accepting: make(chan accepted, 4)}
 	tr := newTracker(t.Context(), path, f, new(bytes.Buffer))
 	var mu sync.Mutex
 	var polled []string
@@ -342,12 +351,19 @@ func TestTracker(t *testing.T) {
 	} {
 		tr.change(ch.name, ch.st)
 	}
+	var got []accepted
 	for range 3 {
 		select {
-		case <-f.accepting:
+		case a := <-f.accepting:
+			got = append(got, a)
 		case <-time.After(10 * time.Second):
 			t.Fatal("the tracker did not tell the Coordinator that a port accepts")
 		}
+	}
+	// Each Accepting names the start it follows
+	slices.SortFunc(got, func(a, b accepted) int { return a.start - b.start })
+	if want := []accepted{{reload.ContentServer, 1}, {reload.CalibreWeb, 2}, {reload.ContentServer, 3}}; !slices.Equal(got, want) {
+		t.Errorf("accepting %v, want %v", got, want)
 	}
 	f.mu.Lock()
 	if want := []reload.App{reload.ContentServer, reload.CalibreWeb, reload.ContentServer}; !slices.Equal(f.started, want) {
