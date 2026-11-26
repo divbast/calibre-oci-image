@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+<!-- SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee> -->
+<!--
+  ImageMagick's policy in the image. Calibre-Web reaches ImageMagick through
+  Wand for covers and thumbnails alone, so every format is denied, and only
+  those it reads and writes are allowed again, each below with what needs
+  it. A later line wins over an earlier one for the same format. Nothing
+  else was needed in the image's tests: not MIFF, INFO, XC or PNM, nor any
+  format for the blank canvas of a series thumbnail.
+
+  The resource limits are upstream's own, unchanged, from
+  config/policy-secure.xml in ImageMagick 7.1.2-36, the version the image
+  builds.
+-->
+<policymap>
+  <policy domain="resource" name="thread" value="2"/>
+  <policy domain="resource" name="time" value="120"/>
+  <policy domain="resource" name="file" value="768"/>
+  <policy domain="resource" name="memory" value="768MiB"/>
+  <policy domain="resource" name="map" value="2GiB"/>
+  <policy domain="resource" name="area" value="32MP"/>
+  <policy domain="resource" name="disk" value="2GiB"/>
+  <policy domain="resource" name="list-length" value="32"/>
+  <policy domain="resource" name="width" value="8KP"/>
+  <policy domain="resource" name="height" value="8KP"/>
+
+  <policy domain="coder" rights="none" pattern="*"/>
+  <!-- The covers Calibre-Web takes, uploaded, fetched, or found in a book
+       or a comic: JPEG, PNG, WebP and BMP; and GIF and TIFF. Each becomes
+       a JPEG, as do the thumbnails, which it writes as cover.jpg: JPG is
+       the name ImageMagick gives a JPEG by that file name -->
+  <policy domain="coder" rights="read | write" pattern="{JPEG,JPG,PNG,WEBP,GIF,TIFF,BMP}"/>
+  <!-- A PDF's first page, as its cover: read alone, through Ghostscript -->
+  <policy domain="coder" rights="read" pattern="PDF"/>
+</policymap>

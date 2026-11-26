@@ -21,12 +21,12 @@ ignore = [
 ]
 
 [lint.per-file-ignores]
-# The demo is a script the image runs by its path, not a package anything
-# imports, so it has no __init__.py
-"app/server.py" = ["INP001"]
-# The first-start helpers too: PID 1 runs each by its path, in Calibre's
+# The first-start helpers are scripts, not a package anything imports, so
+# they have no __init__.py: PID 1 runs each by its path, in Calibre's
 # Python or Calibre-Web's
 "firstrun/*.py" = ["INP001"]
+# The SBOM writer too: the Containerfile's sbom stage runs it by its path
+"sbom/*.py" = ["INP001"]
 
 [lint.flake8-copyright]
 # Every file's notice is its REUSE header
