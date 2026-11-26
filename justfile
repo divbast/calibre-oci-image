@@ -1,10 +1,10 @@
-# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-License-Identifier: GPL-3.0-only
 # SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee>
 
 set shell := ["mise", "exec", "--", "bash", "-euo", "pipefail", "-c"]
 
 # The image's name, without its registry: everything below is named from it
-APP := "oci-image-template"
+APP := "calibre"
 
 # What divbast/ci's app recipes act on: the engine, the image the build
 # writes and the acceptance suite runs, where archive writes it and scan
@@ -27,14 +27,12 @@ import? '.ci/just/app.just'
 default:
     @just --list
 
-# Fetch divbast/ci at the commit the workflows pin, then install the toolchain,
-# and PHPStan for the PHP layer
+# Fetch divbast/ci at the commit the workflows pin, then install the toolchain
 setup: ci-checkout
     #!/usr/bin/env bash
     # Not through the mise exec shell: this is what installs what it runs
     set -euo pipefail
     mise install
-    composer install --working-dir=layers/php
 
 # Fetch divbast/ci at the commit the workflows pin, into .ci, and nothing else
 ci-checkout:
@@ -60,45 +58,20 @@ ci-checkout:
     git -C .ci fetch -q --depth 1 https://github.com/divbast/ci "${sha}"
     git -C .ci checkout -q FETCH_HEAD && rm -rf .ci/bin
 
-# Every lint gate. Needs a running Docker daemon, for docker build --check
-# and the .NET layer's lint, logged in to dhi.io for the .NET and Python
-# layers' images, and the network, for the Python layer's locks
+# Every lint gate. Needs a running Docker daemon, for docker build --check,
+# logged in to dhi.io for the Containerfile's images, and the network, for
+# the locks
 lint:
     {{ just_executable() }} ci-fresh actions-check workflow-audit actionlint shell-lint go-lint go-test reuse-lint app-lint
-    layers/php/vendor/bin/phpstan analyse -c layers/php/phpstan.neon --no-progress
-    {{ just_executable() }} dotnet-lint
-    hadolint layers/dotnet/Containerfile
-    docker build --check -f layers/dotnet/Containerfile layers/dotnet
     {{ just_executable() }} python-lint
-    hadolint layers/python/Containerfile
-    docker build --check -f layers/python/Containerfile layers/python
 
-# The .NET layer's demo, formatted as dotnet format would leave it and built
-# with every warning an error, in the SDK image the layer's backend stage
-# pins and CI verifies: one SDK pin, and none in mise. The demo is mounted
-# read-only and linted in a copy under /tmp, so nothing is written to the
-# checkout, offline, since it restores nothing. Docker whatever ENGINE says,
-# since the dhi.io login is Docker's
-dotnet-lint:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    file=layers/dotnet/Containerfile
-    image=$(sed -nE 's/^FROM[[:space:]]+([^[:space:]]+)[[:space:]]+AS[[:space:]]+backend[[:space:]]*$/\1/p' "${file}")
-    if [[ -z "${image}" || "${image}" == *$'\n'* ]]; then
-        echo "dotnet-lint: ${file} has no one 'FROM <image> AS backend' line to take the SDK image from" >&2
-        exit 1
-    fi
-    docker run --rm --network=none -e DOTNET_CLI_TELEMETRY_OPTOUT=1 -e DOTNET_NOLOGO=1 \
-        -v "${PWD}/layers/dotnet/src:/src:ro" --entrypoint bash "${image}" -euo pipefail -c \
-        'cp -R /src /tmp/src; cd /tmp/src/Template; dotnet format --verify-no-changes; dotnet build -warnaserror'
-
-# The Python layer's demo, formatted as ruff format leaves it, under every
-# ruff rule but the few its ruff.toml lifts, and type-checked by ty, with
-# no cache written to the checkout; then its locks, which must be what its
-# pins give, as divbast-pins -check finds them against PyPI
+# The demo, formatted as ruff format leaves it, under every ruff rule but
+# the few its ruff.toml lifts, and type-checked by ty, with no cache
+# written to the checkout; then its locks, which must be what its pins
+# give, as divbast-pins -check finds them against PyPI
 python-lint:
-    cd layers/python && ruff format --no-cache --check . && ruff check --no-cache . && ty check .
-    go run ./layers/python/cmd/divbast-pins -C layers/python -check
+    ruff format --no-cache --check . && ruff check --no-cache . && ty check .
+    go run ./cmd/divbast-pins -check
 
 # Every gate. Run before committing
 ci:

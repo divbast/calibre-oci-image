@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
 <!-- SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee> -->
 
 # oci-image-template
@@ -223,21 +223,21 @@ are:
   move by pull requests of their own.
 
 Renovate merges its own pull requests once every check on one has passed,
-while the repository variable `OCI_IMAGE_TEMPLATE_AUTOMERGE` is `enabled`.
+while the repository variable `CALIBRE_AUTOMERGE` is `enabled`.
 Three kinds first wait for someone to approve them on the Dependency
 Dashboard: a new major version of divbast/ci, a raise of `go.mod`'s `go`
 line, and a .NET major. Any other value of the variable, or none, stops
 merging from the next run, and Renovate goes on opening and rebasing pull
 requests for a person to merge:
 
-    gh variable set OCI_IMAGE_TEMPLATE_AUTOMERGE --body disabled
+    gh variable set CALIBRE_AUTOMERGE --body disabled
 
 After a merge it rebases every open update the merge left behind, so each
 is tested again against the new `main` before it merges. It merges with a
 squash, which GitHub signs, because `main` accepts only signed commits.
 
 The App, the `renovate` environment holding its key,
-`OCI_IMAGE_TEMPLATE_AUTOMERGE` and this repository's rulesets are all
+`CALIBRE_AUTOMERGE` and this repository's rulesets are all
 managed from [divbast/infra](https://github.com/divbast/infra).
 
 ## Making a new app
@@ -540,11 +540,3 @@ and how to pass it.
 ## AI/LLM Disclosure
 
 This project was developed with significant LLM involvement. Each git commit contains an `Assisted-by:` tag detailing the particular model/tool used.
-
-## Licence
-
-Copyright 2026 Aryan Ameri.
-
-[BSD-2-Clause](LICENSES/BSD-2-Clause.txt)
-
-This project is [REUSE](https://reuse.software/) compliant.

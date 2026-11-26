@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
 <!-- SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee> -->
 
 # oci-image-template
@@ -133,7 +133,7 @@ breaking change.
   main, since GitHub re-runs no checks when a base moves and a green check
   on a stale base proves nothing. **It merges its own PRs** once every
   check passes, with a squash, while the repository variable
-  `OCI_IMAGE_TEMPLATE_AUTOMERGE` is `enabled`; any other value stops
+  `CALIBRE_AUTOMERGE` is `enabled`; any other value stops
   merging from the next run. A new major of divbast/ci, a raise of
   `go.mod`'s `go` line, and a .NET major wait for approval on the
   Dependency Dashboard first. **A merge never publishes.** `build.yml`'s
@@ -332,7 +332,7 @@ Once in place, these hold of it, and of SABnzbd:
   `-OO` with bytecode that needs no timestamps
 - **One port, 8080, with health beside the page.** The app is PID 1 on
   the runtime's Python. It cannot host a probe subcommand, so the probe,
-  `divbast-template`, is a static Go binary of its own, which the
+  `divbast-calibre`, is a static Go binary of its own, which the
   `HEALTHCHECK` runs: `HealthPort` 0 and `HealthPath` `/healthz`
 - **What a Bazarr- or Calibre-shaped app adds** goes where the
   Containerfile's comments say: a frontend stage on DHI's node image, as
@@ -379,7 +379,7 @@ Once in place, these hold of it, and of SABnzbd:
   manager and rule there
 - **divbast/infra** holds the org's settings, this repository's rulesets
   and its template flag, the `divbast-renovate` App, the `renovate`
-  environment and `OCI_IMAGE_TEMPLATE_AUTOMERGE`
+  environment and `CALIBRE_AUTOMERGE`
 
 ## Key commands
 
@@ -482,7 +482,7 @@ Once in place, these hold of it, and of SABnzbd:
   GitHub not answering fails the scan rather than waving it through. A
   local `just scan` never asks GitHub, so a refusal there is advisory,
   with a warning that only CI can tell what it means
-- REUSE-compliant SPDX headers on every file; licence is **BSD-2-Clause**.
+- REUSE-compliant SPDX headers on every file; licence is **GPL-3.0-only**.
   The image's licences label names only that, because the image ships
   nothing else of its own; an app that ships an upstream's files adds the
   upstream's licence to the label, and leaves which file carries which
