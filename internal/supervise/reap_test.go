@@ -6,6 +6,7 @@ package supervise
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -178,6 +179,41 @@ func TestExecOneOff(t *testing.T) {
 			t.Errorf("a missing program: got %v, want an error naming it", err)
 		}
 	})
+}
+
+// TestExecFoldsStderr: a one-off program's stderr never reaches PID 1's.
+// One that fails after writing many lines there gives an error of one
+// line, ending with its last line that is not empty; one that succeeds
+// gives no error.
+func TestExecFoldsStderr(t *testing.T) { //nolint:paralleltest // it replaces os.Stderr, which every test shares
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaked := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(r) // the write end's close ends it
+		leaked <- b
+	}()
+	saved := os.Stderr
+	os.Stderr = w
+	s := New(nil, production, nil)
+	_, failed := s.Exec(t.Context(), helperArgv(), helperEnv("stderr-lines", "HELPER_EXIT=3"), nil)
+	_, worked := s.Exec(t.Context(), helperArgv(), helperEnv("stderr-lines"), nil)
+	os.Stderr = saved
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if want := helperArgv()[0] + " exited with status 3: the last line"; failed == nil || failed.Error() != want {
+		t.Errorf("a failed run: got the error %v, want %q", failed, want)
+	}
+	if worked != nil {
+		t.Errorf("a run that worked: got the error %v, want none", worked)
+	}
+	if b := <-leaked; len(b) > 0 {
+		t.Errorf("PID 1's stderr got %d bytes of the program's, starting %q, want none", len(b), b[:min(len(b), 60)])
+	}
 }
 
 // TestExecRaceWithReaper: a process that exits at once may be reaped

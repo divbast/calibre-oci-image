@@ -88,6 +88,18 @@ func helperMain(mode string) int {
 		return code
 	case "hang":
 		sleepForever()
+	case "stderr-lines":
+		// More lines than Exec keeps, then the one that says why, then
+		// lines with nothing in them
+		w := bufio.NewWriter(os.Stderr)
+		for i := range 5000 {
+			_, _ = fmt.Fprintf(w, "line %d of what went before\n", i)
+		}
+		_, _ = w.WriteString("the last line\n\n  \n")
+		if w.Flush() != nil {
+			return 2
+		}
+		return code
 	case "env":
 		// Its environment, one variable to a line, on stdout, or on fd 3
 		// when HELPER_OUT says so

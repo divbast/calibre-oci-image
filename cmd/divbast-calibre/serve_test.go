@@ -132,7 +132,7 @@ func TestLibraryFiles(t *testing.T) {
 
 // TestLoginReader is the read of Calibre-Web's login header setting: the
 // helper's get-login-header mode, on app.db, with an environment that holds
-// no password, and its output trimmed.
+// no password, and its output trimmed. A read that fails names app.db.
 func TestLoginReader(t *testing.T) {
 	t.Parallel()
 	var argv, env []string
@@ -156,10 +156,13 @@ func TestLoginReader(t *testing.T) {
 		t.Errorf("the helper's environment holds %q, want PATH alone", names)
 	}
 	failing := loginReader(func(context.Context, []string, []string, []byte) ([]byte, error) {
-		return nil, errors.New("exit status 1")
+		return nil, errors.New("/app/venv/bin/python exited with status 1: calibre_web_init: DatabaseError: file is not a database")
 	}, nil, image)
-	if _, err := failing(t.Context()); err == nil {
-		t.Error("a failed read gave no error")
+	_, err = failing(t.Context())
+	wantErr := "cannot read Calibre-Web's login header setting from /config/calibre-web/app.db: " +
+		"/app/venv/bin/python exited with status 1: calibre_web_init: DatabaseError: file is not a database"
+	if err == nil || err.Error() != wantErr {
+		t.Errorf("a failed read gave the error %v, want %q", err, wantErr)
 	}
 }
 

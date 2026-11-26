@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"syscall"
 )
@@ -125,13 +127,21 @@ func (r *reaper) end() {
 	}
 }
 
+// stderrKept is how much of a one-off program's stderr Exec keeps: the
+// end, where its last line is.
+const stderrKept = 64 << 10
+
 // Exec runs argv once, with env (PID 1's own when nil) less
-// PasswordVariables, and with stdin, and returns what it wrote to stdout;
-// its stderr is PID 1's. argv[0] is the program's path, which is not
-// looked up in PATH. An exit with a status other than 0 is an error
-// naming argv[0]. So is ctx ending before the program has exited, which
-// kills it, or before its stdout has been read to the end: Exec then
-// returns no output, never part of it.
+// PasswordVariables, and with stdin, and returns what it wrote to stdout.
+// argv[0] is the program's path, which is not looked up in PATH. An exit
+// with a status other than 0 is an error naming argv[0]. So is ctx ending
+// before the program has exited, which kills it, or before its stdout has
+// been read to the end: Exec then returns no output, never part of it.
+//
+// The program's stderr never reaches PID 1's. Exec keeps its end, and an
+// error ends with the last line there that is not empty, so the caller
+// reports the failure in one line, and nothing else the program wrote
+// reaches the log.
 //
 // Its exit status comes from the process's one reaper, as the children's
 // do. Once Run or Exec has started that reaper, every program PID 1 runs
@@ -153,13 +163,18 @@ func (s *Supervisor) Exec(ctx context.Context, argv, env []string, stdin []byte)
 		closeAll(inR, inW)
 		return nil, err
 	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		closeAll(inR, inW, outR, outW)
+		return nil, err
+	}
 	reap.ensure()
 	reap.begin()
-	p, err := os.StartProcess(argv[0], argv, &os.ProcAttr{Env: childEnv(env), Files: []*os.File{inR, outW, os.Stderr}})
-	closeAll(inR, outW)
+	p, err := os.StartProcess(argv[0], argv, &os.ProcAttr{Env: childEnv(env), Files: []*os.File{inR, outW, errW}})
+	closeAll(inR, outW, errW)
 	if err != nil {
 		reap.abandon()
-		closeAll(inW, outR)
+		closeAll(inW, outR, errR)
 		return nil, err
 	}
 	reap.started()
@@ -174,12 +189,17 @@ func (s *Supervisor) Exec(ctx context.Context, argv, env []string, stdin []byte)
 	}()
 	type read struct {
 		b   []byte
-		err error // nil once stdout was read to its end
+		err error // nil once the pipe was read to its end
 	}
-	out := make(chan read, 1)
+	out, errs := make(chan read, 1), make(chan read, 1)
 	go func() {
 		b, err := io.ReadAll(outR)
 		out <- read{b, err}
+	}()
+	go func() {
+		t := &tail{max: stderrKept}
+		_, err := io.Copy(t, errR)
+		errs <- read{t.buf, err}
 	}()
 
 	var ws syscall.WaitStatus
@@ -190,26 +210,69 @@ func (s *Supervisor) Exec(ctx context.Context, argv, env []string, stdin []byte)
 		ws = <-status
 	}
 	_ = p.Release()
-	// A process the program started may still hold stdin or stdout open
+	// A process the program started may still hold stdin, stdout or
+	// stderr open
 	_ = inW.Close()
-	var stdout read
-	select {
-	case stdout = <-out:
-	case <-ctx.Done():
-		_ = outR.Close()
-		stdout = <-out
+	stdout, stderr := drain(ctx, outR, out), drain(ctx, errR, errs)
+	why := ""
+	if line := lastLine(stderr.b); line != "" {
+		why = ": " + line
 	}
-	_ = outR.Close()
 
 	switch {
 	case ctx.Err() != nil && (!ws.Exited() || stdout.err != nil):
-		return nil, fmt.Errorf("%s: %w", argv[0], ctx.Err())
+		return nil, fmt.Errorf("%s: %w%s", argv[0], ctx.Err(), why)
 	case stdout.err != nil:
-		return nil, fmt.Errorf("%s: reading its stdout: %w", argv[0], stdout.err)
+		return nil, fmt.Errorf("%s: reading its stdout: %w%s", argv[0], stdout.err, why)
 	case !ws.Exited() || ws.ExitStatus() != 0:
-		return stdout.b, fmt.Errorf("%s %s", argv[0], describe(ws))
+		return stdout.b, fmt.Errorf("%s %s%s", argv[0], describe(ws), why)
 	}
 	return stdout.b, nil
+}
+
+// drain waits for the read of r to end, which it does once every process
+// holding the pipe's other end has closed it, or until ctx ends, which
+// closes r and so ends the read with an error.
+func drain[T any](ctx context.Context, r *os.File, done <-chan T) T {
+	var got T
+	select {
+	case got = <-done:
+	case <-ctx.Done():
+		_ = r.Close()
+		got = <-done
+	}
+	_ = r.Close()
+	return got
+}
+
+// tail keeps the last max bytes written to it.
+type tail struct {
+	buf []byte
+	max int
+}
+
+func (t *tail) Write(p []byte) (int, error) {
+	n := len(p)
+	if len(p) > t.max {
+		p = p[len(p)-t.max:]
+	}
+	if over := len(t.buf) + len(p) - t.max; over > 0 {
+		t.buf = t.buf[:copy(t.buf, t.buf[over:])]
+	}
+	t.buf = append(t.buf, p...)
+	return n, nil
+}
+
+// lastLine returns the last line in b that is not empty, without the
+// white space around it.
+func lastLine(b []byte) string {
+	lines := strings.Split(string(b), "\n")
+	for _, l := range slices.Backward(lines) {
+		if l = strings.TrimSpace(l); l != "" {
+			return l
+		}
+	}
+	return ""
 }
 
 func closeAll(files ...*os.File) {

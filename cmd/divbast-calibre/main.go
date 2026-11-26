@@ -232,7 +232,7 @@ func startApps(ctx context.Context, s *settings) int {
 	// Exec, whose reaper collects them all
 	login := proxy.NewLoginHeader(loginReader(sup.Exec, env, s.l), loginTimeout, time.Now)
 	if err := login.Load(ctx); err != nil {
-		say(s.stderr, "reading Calibre-Web's login header setting failed: %v", err)
+		say(s.stderr, "%v", err)
 		return 1
 	}
 
@@ -297,12 +297,17 @@ func libraryFiles(l layout) []string {
 }
 
 // loginReader reads Calibre-Web's login header setting with run, which
-// runs Calibre-Web's helper with env.
+// runs Calibre-Web's helper with env. Its error names app.db, and ends
+// with why the helper failed.
 func loginReader(run firststart.Runner, env []string, l layout) func(context.Context) (string, error) {
-	argv := []string{firststart.Python, firststart.WebHelper, "get-login-header", filepath.Join(l.calibreWeb(), firststart.AppDB)}
+	db := filepath.Join(l.calibreWeb(), firststart.AppDB)
+	argv := []string{firststart.Python, firststart.WebHelper, "get-login-header", db}
 	return func(ctx context.Context) (string, error) {
 		out, err := run(ctx, argv, env, nil)
-		return strings.TrimSpace(string(out)), err
+		if err != nil {
+			return "", fmt.Errorf("cannot read Calibre-Web's login header setting from %s: %w", db, err)
+		}
+		return strings.TrimSpace(string(out)), nil
 	}
 }
 
