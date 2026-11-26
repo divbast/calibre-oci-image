@@ -1,4 +1,180 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>divbast/renovate-config", "github>divbast/renovate-config:app"]
+  "extends": ["github>divbast/renovate-config", "github>divbast/renovate-config:app"],
+  "customDatasources": {
+    "rarlab": {
+      "description": "unrar's source tarballs, as RARLAB's own download page for extras links them: RARLAB publishes no feed and no checksums, and the page links the newest tarball, betas included. Each link is a release; extractVersion below keeps the unrarsrc-<n>.tar.gz ones and their counter-style names.",
+      "defaultRegistryUrlTemplate": "https://www.rarlab.com/rar_add.htm",
+      "format": "html"
+    }
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "ARG CALIBRE_VERSION and the two ARG CALIBRE_SHA256_ lines beneath it, from Calibre's GitHub releases, which are tagged v9.19.0. The update empties both checksums: go run ./cmd/divbast-pins fills an empty one in, in the same PR, from the bundle download.calibre-ebook.com serves then, and never rewrites a set one. It also rewrites IMAGE_PAIR. The three ARGs must stay adjacent and in this order.",
+      "managerFilePatterns": ["/^Containerfile$/"],
+      "matchStrings": ["ARG CALIBRE_VERSION=(?<currentValue>\\S+)\\nARG CALIBRE_SHA256_X86_64=[0-9a-f]*\\nARG CALIBRE_SHA256_ARM64=[0-9a-f]*\\n"],
+      "depNameTemplate": "kovidgoyal/calibre",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "autoReplaceStringTemplate": "ARG CALIBRE_VERSION={{{newValue}}}\nARG CALIBRE_SHA256_X86_64=\nARG CALIBRE_SHA256_ARM64=\n"
+    },
+    {
+      "customType": "regex",
+      "description": "ARG CALIBRE_WEB_COMMIT, the commit of Calibre-Web's master branch the image is built from, and the ARG CALIBRE_WEB_SHA256 beneath it. Calibre-Web follows master: the image takes the newest commit on it, with no tag between. The update empties the checksum, and go run ./cmd/divbast-pins fills it in, in the same PR, from the archive GitHub makes from the new commit, and rewrites IMAGE_PAIR. The two ARGs must stay adjacent and in this order.",
+      "managerFilePatterns": ["/^Containerfile$/"],
+      "matchStrings": ["ARG CALIBRE_WEB_COMMIT=(?<currentDigest>[0-9a-f]{40})\\nARG CALIBRE_WEB_SHA256=[0-9a-f]*\\n"],
+      "depNameTemplate": "janeczku/calibre-web",
+      "packageNameTemplate": "https://github.com/janeczku/calibre-web",
+      "currentValueTemplate": "master",
+      "datasourceTemplate": "git-refs",
+      "autoReplaceStringTemplate": "ARG CALIBRE_WEB_COMMIT={{{newDigest}}}\nARG CALIBRE_WEB_SHA256=\n"
+    },
+    {
+      "customType": "regex",
+      "description": "ARG IMAGEMAGICK_VERSION and the ARG IMAGEMAGICK_COMMIT beneath it, captured together so one PR moves both, from ImageMagick's GitHub tags. ImageMagick numbers a release 7.1.2-36, a build counter after the patch number, which semver cannot read. The digest is the commit the tag names, which the imagemagick stage checks out and asserts the tag still names. The two ARGs must stay adjacent and in this order.",
+      "managerFilePatterns": ["/^Containerfile$/"],
+      "matchStrings": ["ARG IMAGEMAGICK_VERSION=(?<currentValue>\\S+)\\nARG IMAGEMAGICK_COMMIT=(?<currentDigest>[0-9a-f]{40})"],
+      "depNameTemplate": "ImageMagick/ImageMagick",
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-(?<build>\\d+)$",
+      "autoReplaceStringTemplate": "ARG IMAGEMAGICK_VERSION={{{newValue}}}\nARG IMAGEMAGICK_COMMIT={{{newDigest}}}"
+    },
+    {
+      "customType": "regex",
+      "description": "ARG GHOSTSCRIPT_VERSION, ARG GHOSTSCRIPT_TAG and ARG GHOSTSCRIPT_SHA256, from the releases of ArtifexSoftware/ghostpdl-downloads. Ghostscript tags a release gs10080 for version 10.08.0: the tag number is what Renovate follows, and the update writes the version from it, 10.09.0 from 10090. It empties the checksum, which go run ./cmd/divbast-pins fills in, in the same PR, from the tarball GitHub serves then. The three ARGs must stay adjacent and in this order.",
+      "managerFilePatterns": ["/^Containerfile$/"],
+      "matchStrings": ["ARG GHOSTSCRIPT_VERSION=\\S+\\nARG GHOSTSCRIPT_TAG=(?<currentValue>[0-9]+)\\nARG GHOSTSCRIPT_SHA256=[0-9a-f]*\\n"],
+      "depNameTemplate": "ArtifexSoftware/ghostpdl-downloads",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^gs(?<version>[0-9]+)$",
+      "versioningTemplate": "regex:^(?<major>\\d\\d)(?<minor>\\d\\d)(?<patch>\\d)$",
+      "autoReplaceStringTemplate": "ARG GHOSTSCRIPT_VERSION={{{replace '^(\\d\\d)(\\d\\d)(\\d)$' '$1.$2.$3' newValue}}}\nARG GHOSTSCRIPT_TAG={{{newValue}}}\nARG GHOSTSCRIPT_SHA256=\n"
+    },
+    {
+      "customType": "regex",
+      "description": "ARG KEPUBIFY_VERSION and the ARG KEPUBIFY_COMMIT beneath it, captured together so one PR moves both, from kepubify's GitHub tags, which are named v5.0.0 (its releases carry the same names, but Renovate finds a tag's commit only from the tags). The digest is the commit the tag names, which the kepubify stage checks out and asserts the tag still names. The two ARGs must stay adjacent and in this order.",
+      "managerFilePatterns": ["/^Containerfile$/"],
+      "matchStrings": ["ARG KEPUBIFY_VERSION=(?<currentValue>\\S+)\\nARG KEPUBIFY_COMMIT=(?<currentDigest>[0-9a-f]{40})"],
+      "depNameTemplate": "pgaskin/kepubify",
+      "datasourceTemplate": "github-tags",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "autoReplaceStringTemplate": "ARG KEPUBIFY_VERSION={{{newValue}}}\nARG KEPUBIFY_COMMIT={{{newDigest}}}"
+    },
+    {
+      "customType": "regex",
+      "description": "ARG UNRAR_VERSION, the name of the unrar tarball RARLAB links, from the rarlab datasource above, and the ARG UNRAR_SHA256 beneath it, which the update empties: go run ./cmd/divbast-pins fills an empty one in, in the same PR, from the tarball RARLAB serves then, and never rewrites a set one, so a different file under the same name fails every later run instead of being taken. The two ARGs must stay adjacent and in this order.",
+      "managerFilePatterns": ["/^Containerfile$/"],
+      "matchStrings": ["ARG UNRAR_VERSION=(?<currentValue>\\S+)\\nARG UNRAR_SHA256=[0-9a-f]*\\n"],
+      "depNameTemplate": "unrar",
+      "datasourceTemplate": "custom.rarlab",
+      "versioningTemplate": "loose",
+      "autoReplaceStringTemplate": "ARG UNRAR_VERSION={{{newValue}}}\nARG UNRAR_SHA256=\n"
+    },
+    {
+      "customType": "regex",
+      "description": "Each package==version line of python/pins.txt, from PyPI: what Calibre-Web's requirements leave unpinned, what a pinned package needs that they leave out, and the build backends the source builds need. A bare name under a '# leaves out:' comment has no version and is not read. go run ./cmd/divbast-pins regenerates the locks from them in the same PR. Renovate's own Python managers stay off python/, by the app preset.",
+      "managerFilePatterns": ["/^python/pins\\.txt$/"],
+      "matchStrings": ["(?<depName>[A-Za-z0-9][A-Za-z0-9._-]*)==(?<currentValue>\\S+)"],
+      "datasourceTemplate": "pypi"
+    },
+    {
+      "customType": "regex",
+      "description": "The packages the Containerfile's toolchain and runtimelibs stages install, each pinned name=version on a line of its own, to Docker Hardened Images' own build: from DHI's own Debian repository, the one those stages' apt reads alone, whose amd64 and arm64 indexes carry the same versions. Most end +dhiN; DHI's own packages, such as rustc and cargo, do not. DHI deletes a superseded build, so a pin left behind fails the build until this moves it.",
+      "managerFilePatterns": ["/^Containerfile$/"],
+      "matchStrings": [" (?<depName>[a-z0-9][a-z0-9.+-]*)=(?<currentValue>[0-9][^\\s=;]*) \\\\"],
+      "datasourceTemplate": "deb",
+      "registryUrlTemplate": "https://dhi.io/deb/debian/main?suite=trixie&components=main&binaryArch=amd64"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Calibre's releases merge once every check passes: the bundle's signature check and the acceptance suite are what hold one back. Each empties the two checksums, which the repository's own command fills in, and moves IMAGE_PAIR with them, which ci's Renovate allows.",
+      "matchDepNames": ["kovidgoyal/calibre"],
+      "labels": ["calibre"],
+      "commitMessagePrefix": "calibre:",
+      "automerge": true,
+      "postUpgradeTasks": {
+        "commands": ["go run ./cmd/divbast-pins"],
+        "fileFilters": ["python/**", "Containerfile"],
+        "executionMode": "branch",
+        "installTools": { "golang": {} }
+      }
+    },
+    {
+      "description": "Calibre-Web's master branch: each new commit on it merges once every check passes. The update empties CALIBRE_WEB_SHA256, and the repository's own command fills it in, regenerates the locks from the new commit's requirements and moves IMAGE_PAIR.",
+      "matchDepNames": ["janeczku/calibre-web"],
+      "labels": ["calibre-web"],
+      "commitMessagePrefix": "calibre-web:",
+      "automerge": true,
+      "postUpgradeTasks": {
+        "commands": ["go run ./cmd/divbast-pins"],
+        "fileFilters": ["python/**", "Containerfile"],
+        "executionMode": "branch",
+        "installTools": { "golang": {} }
+      }
+    },
+    {
+      "description": "ImageMagick's releases merge once every check passes: the imagemagick stage's checks and the acceptance suite's conversions are what hold one back.",
+      "matchDepNames": ["ImageMagick/ImageMagick"],
+      "labels": ["imagemagick"],
+      "commitMessagePrefix": "build:",
+      "automerge": true
+    },
+    {
+      "description": "Ghostscript's releases merge once every check passes, on the checksum of the tarball GitHub served when the PR was made, which the repository's own command writes into the GHOSTSCRIPT_SHA256 the update emptied.",
+      "matchDepNames": ["ArtifexSoftware/ghostpdl-downloads"],
+      "labels": ["ghostscript"],
+      "commitMessagePrefix": "build:",
+      "automerge": true,
+      "postUpgradeTasks": {
+        "commands": ["go run ./cmd/divbast-pins"],
+        "fileFilters": ["Containerfile"],
+        "executionMode": "branch",
+        "installTools": { "golang": {} }
+      }
+    },
+    {
+      "description": "kepubify's releases merge once every check passes: the kepubify stage's checks and the acceptance suite's conversions are what hold one back.",
+      "matchDepNames": ["pgaskin/kepubify"],
+      "labels": ["kepubify"],
+      "commitMessagePrefix": "build:",
+      "automerge": true
+    },
+    {
+      "description": "unrar's tarballs, betas included, which RARLAB's page links, newest first. Each merges once green, on the checksum of what RARLAB served when the PR was made, which the repository's own command writes into the UNRAR_SHA256 the update emptied.",
+      "matchDepNames": ["unrar"],
+      "extractVersion": "unrarsrc-(?<version>[0-9.]+)\\.tar\\.gz$",
+      "ignoreUnstable": false,
+      "labels": ["unrar"],
+      "commitMessagePrefix": "build:",
+      "automerge": true,
+      "postUpgradeTasks": {
+        "commands": ["go run ./cmd/divbast-pins"],
+        "fileFilters": ["Containerfile"],
+        "executionMode": "branch",
+        "installTools": { "golang": {} }
+      }
+    },
+    {
+      "description": "A pin in python/pins.txt moves the locks with it, regenerated by the repository's own command, which ci's Renovate allows.",
+      "matchManagers": ["custom.regex"],
+      "matchDatasources": ["pypi"],
+      "labels": ["python"],
+      "postUpgradeTasks": {
+        "commands": ["go run ./cmd/divbast-pins"],
+        "fileFilters": ["python/**"],
+        "executionMode": "branch",
+        "installTools": { "golang": {} }
+      }
+    },
+    {
+      "description": "The packages the toolchain and runtimelibs stages install move together, in one pull request, and merge once every check passes.",
+      "matchManagers": ["custom.regex"],
+      "matchDatasources": ["deb"],
+      "groupName": "DHI build packages",
+      "commitMessagePrefix": "build:",
+      "automerge": true
+    }
+  ]
 }
