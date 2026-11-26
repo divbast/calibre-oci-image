@@ -1,63 +1,86 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <!-- SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee> -->
 
-# oci-image-template
+# calibre-oci-image
 
-A minimal working divbast app: one page, served by a stdlib Go server, in
-an image that runs at zero Linux capabilities, with no new privileges, on a
-read-only root filesystem as a non-root user. It goes through divbast/ci's shared pipeline exactly as
-a real app does: lint, a build for amd64 and arm64, the confinement
-contract and its own acceptance suite under Docker and rootless Podman, a
-vulnerability scan, and a daily rehearsed publish.
+[Calibre](https://calibre-ebook.com)'s Content Server and
+[Calibre-Web](https://github.com/janeczku/calibre-web), two web interfaces
+to one Calibre e-book library, in one image that runs at zero Linux
+capabilities, with no new privileges, on a read-only root filesystem as a
+non-root user, with no shell in it. Calibre comes as its own signed build
+for Linux, and Calibre-Web is built from its source. The image goes
+through divbast/ci's shared pipeline: lint, a build for amd64 and arm64,
+the confinement contract and its own acceptance suite under Docker and
+rootless Podman, an image scan, and a daily publish to
+`ghcr.io/divbast/calibre`. [Publishing](#publishing) says when it
+publishes and under which tags.
 
-Every new divbast image repository starts as a copy of this one, whatever
-its app is written in. A Go app keeps the Go core. A PHP app served by
-FrankenPHP moves the PHP layer, `layers/php`, into place: the same page as
-a FrankenPHP app, linted here but not built. A .NET app moves the .NET
-layer, `layers/dotnet`, into place: the same page again, from ASP.NET Core,
-also linted here but not built. A Python app moves the Python layer,
-`layers/python`, into place: the same page from Python's standard
-library, linted here and not built either.
-[Making a new app](#making-a-new-app) lists what to change, in order.
-
-Its publish job rehearses: it runs every step of a real publish against a
-registry it starts inside the job, so nothing reaches ghcr.io and there is
-no image to pull. [Publishing](#publishing) says how.
+The image follows every Calibre release, and each new commit on
+Calibre-Web's master branch.
 
 ## Base
 
-The image is one static Go binary, `/usr/local/bin/template`, on
-[distroless](https://github.com/GoogleContainerTools/distroless)'s
-`static-debian13`, which holds nothing else but CA certificates, time zones
-and the `nonroot` user. The binary is built in a `golang` stage, at the
-newest stable Go, with the standard library alone. Both images are pinned by
-digest, and CI builds nothing until it has checked that the distroless
-project signed the runtime's digest.
+The image runs on Docker Hardened Images'
+[`python`](https://hub.docker.com/hardened-images/catalog) for Debian 13,
+with no shell and no package manager. That image ships pip, setuptools and
+wheel beside Python, and this one keeps them: nothing here runs them, and
+Calibre-Web's packages are in a venv of their own, with no pip in it.
+Every stage of the build is a Docker Hardened Image too, and CI refuses to
+build until Docker's signature on each is verified. Every package the
+build stages install comes from Docker Hardened Images' own Debian
+repository alone.
 
-The PHP layer runs [FrankenPHP](https://github.com/php/frankenphp) instead:
-PHP 8.5 and Caddy in one binary, built by
-[divbast/frankenphp](https://github.com/divbast/frankenphp) and copied in
-by digest, on `cc-debian13`, as divbast's PHP apps do.
+- `calibre` downloads Calibre's own build for Linux, the one for the
+  image's architecture, from download.calibre-ebook.com. It checks the
+  file against the sha256 the Containerfile names, then checks that it is
+  signed by Calibre's release key, the one in `keys/`, fingerprint
+  `3CE1780F78DD88DF45194FD706BC317B515ACE7C`, and no other. It also
+  checks the signature on Calibre's tag for that version, with the
+  same key, and takes from the tag the lists of the libraries and Python
+  packages Calibre's build holds, for the SBOM.
+- `calibreweb` takes Calibre-Web at the full commit the Containerfile's
+  `CALIBRE_WEB_COMMIT` names, from the archive GitHub makes of it, held to
+  its sha256: Calibre-Web signs neither its tags nor its commits. It turns
+  Calibre-Web's own updater off, by the one line that sets it, and the
+  build fails unless exactly that line changed.
+- `deps` builds Calibre-Web's Python packages: every one that its
+  `requirements.txt` and `optional-requirements.txt` name, but Google
+  Drive's two, as [What the image turns off](#what-the-image-turns-off)
+  says. Each file is fetched first, by the sha256 that `python/files.txt`
+  names, and checked; then, with no network, the pure-Python packages are
+  installed from their wheels, and the ones with C or Rust code are built
+  from source, against the image's own OpenSSL and libraries. `pip check`
+  then holds every package to what it requires. Calibre-Web serves its
+  pages through gevent, one of those packages.
+- `runtimelibs` adds the system libraries that Calibre's build,
+  Calibre-Web and the tools below need beyond the base's own: 72 packages
+  from Docker Hardened Images' repository, each pinned. The runtime has no
+  dpkg, so each package's entry goes to `/var/lib/dpkg/status.d`, where
+  the base lists its own packages and the scan reads them.
+- `ghostscript` and `imagemagick` build Ghostscript and ImageMagick, with
+  which Calibre-Web makes covers and thumbnails, a PDF's first page among
+  them. `unrar` builds RARLAB's unrar, with which Calibre-Web reads CBR
+  comics. All three link to the base's libraries and the packages above,
+  so Docker's updates of those reach them, and each is hardened and
+  checked: position-independent, bound at load, with a read-only
+  relocation table. `kepubify` builds kepubify, with which Calibre-Web
+  makes books for Kobo e-readers, as a static Go program. ImageMagick and
+  kepubify are fetched by commit, and the build checks that their release
+  tag still names it; Ghostscript and unrar come as tarballs, held to the
+  sha256 the Containerfile names.
+- `sbom` writes two SBOMs, which the scan reads: see
+  [The scan](#the-scan).
+- `probe` builds `divbast-calibre`, the image's own command and PID 1, a
+  static Go binary on the standard library alone.
+- `libcheck` puts the image's files together and checks that each program
+  and library in them finds every library it needs. It leaves out, by
+  name, 19 files of Calibre's build that need a library neither that
+  build nor Docker Hardened Images ships. Each of the 19 is for a screen,
+  a device or speech, which a server does not have. It then runs
+  Ghostscript, loads ImageMagick, and proves ImageMagick's policy, as
+  [ImageMagick](#imagemagick) says.
 
-The .NET layer runs a framework-dependent ASP.NET Core app on
-[Docker Hardened Images](https://docs.docker.com/dhi/)' ASP.NET Core
-runtime, which holds the .NET runtime, ICU and OpenSSL, and no shell or
-package manager. The app is built in their .NET SDK image, and its health
-probe, a static Go binary on the standard library, in their Go image. All
-three are pinned by digest, and CI checks Docker's signature on each before
-the lint runs any of them.
-
-The Python layer runs a Python app on Docker Hardened Images' Python
-runtime, which holds Python and no shell or package manager, from a venv
-built in their Python `-dev` image. The venv's packages come from hash
-locks, `python/requirements.lock` and `python/build.lock`, which
-`go run ./cmd/divbast-pins` writes from `python/requirements.in` and
-`python/pins.txt`: every file is fetched by its sha256 first, then, with
-no network, the pure packages install from their wheels and the ones
-with C or Rust code build from source. The demo needs none. Its health
-probe is a static Go binary on the standard library, built in their Go
-image. All three are pinned by digest, and CI checks Docker's signature
-on each before the lint reads any of them.
+Calibre is never patched. Calibre-Web is changed in that one line alone.
 
 ## Container Features
 
@@ -67,104 +90,642 @@ on each before the lint reads any of them.
 | Privileges | no new ones (`--security-opt no-new-privileges`), under the engine's seccomp filter |
 | Root filesystem | read-only |
 | User | uid/gid 65532 (`nonroot`) |
-| Port | 8080 (the page), 8081 (health, do not publish), and nothing else listens |
-| tmpfs required | `/tmp`, 16 MiB, which nothing can run from (`--tmpfs /tmp:size=16m,noexec,nosuid,nodev`) |
-| Volume | none |
-| Processes | one: the app, `template serve`, as PID 1 |
+| Ports | 8080, Calibre's Content Server, and 8083, Calibre-Web, on IPv4 and IPv6. The two apps themselves listen on 127.0.0.1 alone, on 18080 and 18083, and nothing else listens |
+| tmpfs required | `/tmp`, which nothing can run from (`--tmpfs /tmp:rw,noexec,nosuid,nodev,size=2g`); see [`/tmp`](#tmp) <!-- tmp-size --> |
+| Volumes | `/books`, the library, and `/config`, both apps' settings, which you mount, writable by 65532 |
+| Processes | PID 1, `divbast-calibre`, which runs the Content Server (`calibre-server`) and Calibre-Web, and the programs they run |
 | Shell in image | none |
 | Package manager | none |
-| Outbound network | none |
-| Healthy | the shipped probe: `/healthz` 200 **and** `GET /` from loopback exactly `Hello from oci-image-template` |
-
-The app writes nothing, so `/tmp` stays empty: the contract grants one
-tmpfs, and 16 MiB is what the acceptance suite gives every container it
-runs.
-
-Nothing in the image opens a connection out.
+| Outbound network | what you set up in either app, such as e-mail or a metadata search; Calibre-Web's updater is off |
+| Healthy | the shipped probe: each app answers on its loopback port, the Content Server with this image's Calibre version, and 8080 and 8083 are listened on, on every address |
 
 ## Running
 
-There is no published image, so build one first, with Podman to match the
-command below: `just setup`, then `ENGINE=podman just build`, which tags it
-`localhost/oci-image-template:dev`.
+Pull `ghcr.io/divbast/calibre:latest`, which follows Calibre's newest
+release and Calibre-Web's newest commit. `:9.19.0` is the newest image
+with Calibre 9.19.0, and `:9.19.0-cw.79d3571` the newest with that Calibre
+and that Calibre-Web commit, named by its first seven characters. The
+package page on ghcr.io lists the tags. To build it yourself:
+`docker login dhi.io`, since every image the build starts from is Docker
+Hardened, then `just setup`, then `ENGINE=podman just build`, which tags
+it `localhost/calibre:dev`.
+
+Every example below:
+
+- gives the two admin passwords as files, from the engine's secrets, and
+  never on a command line;
+- mounts the library at `/books` and the settings at `/config`;
+- gives `/tmp` 2 GiB, as [`/tmp`](#tmp) says; <!-- tmp-size -->
+- publishes both ports on the host's loopback alone;
+- sets `TRUSTED_PROXIES` to `192.0.2.10`, which stands for your reverse
+  proxy's address, as
+  [Behind a reverse proxy](#behind-a-reverse-proxy) says. Leave it out
+  when no proxy is in front of the image.
+
+Each password file holds the password and nothing else; one newline at
+its end is allowed. [First start](#first-start) says what each password is
+for, and the rules both must follow.
+
+### Podman
 
 ```bash
-podman run -d --name oci-image-template \
+podman secret create calibre-admin-password ./calibre-admin-password
+podman secret create calibre-web-admin-password ./calibre-web-admin-password
+podman run -d --name calibre \
   --cap-drop ALL --read-only --read-only-tmpfs=false \
   --security-opt no-new-privileges \
   --user 65532:65532 \
-  --tmpfs /tmp:size=16m,noexec,nosuid,nodev \
-  -p 8080:8080 \
-  localhost/oci-image-template:dev
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=2g \
+  --secret calibre-admin-password \
+  --secret calibre-web-admin-password \
+  -e CALIBRE_ADMIN_PASSWORD_FILE=/run/secrets/calibre-admin-password \
+  -e CALIBRE_WEB_ADMIN_PASSWORD_FILE=/run/secrets/calibre-web-admin-password \
+  -e TRUSTED_PROXIES=192.0.2.10 \
+  -v calibre-books:/books \
+  -v calibre-config:/config \
+  -p 127.0.0.1:8080:8080 \
+  -p 127.0.0.1:8083:8083 \
+  --health-cmd '["/usr/local/bin/divbast-calibre","health"]' \
+  ghcr.io/divbast/calibre:latest
 ```
 
-`--read-only-tmpfs=false` is Podman's alone: without it, Podman mounts
-writable tmpfs of its own at `/run`, `/var/tmp` and elsewhere beside the
-read-only root. Docker takes the same command without it.
+Podman mounts each secret at `/run/secrets/<name>`, the file the `_FILE`
+variables name. `--read-only-tmpfs=false` and `--health-cmd` are Podman's
+alone. Without the first, Podman mounts writable tmpfs of its own at
+`/run`, `/var/tmp` and elsewhere beside the read-only root; without the
+second, it never runs the image's health check, as [Health](#health) says.
 
-What is served on 8080 is an allowlist: `/`, the page,
-`Hello from oci-image-template`. Everything else is a 404 with an empty
-body. The acceptance suite checks the page, `/index.php`, `/healthz` and a
-path nothing names.
+As a Quadlet, in `~/.config/containers/systemd/calibre.container`:
 
-Each request is logged to stdout as JSON. A stop ends the server at once:
-it takes SIGTERM, finishes what it is answering within 5 seconds, and exits
-0.
+```ini
+[Container]
+Image=ghcr.io/divbast/calibre:latest
+User=65532
+Group=65532
+DropCapability=ALL
+NoNewPrivileges=true
+ReadOnly=true
+ReadOnlyTmpfs=false
+Tmpfs=/tmp:rw,noexec,nosuid,nodev,size=2g
+Secret=calibre-admin-password
+Secret=calibre-web-admin-password
+Environment=CALIBRE_ADMIN_PASSWORD_FILE=/run/secrets/calibre-admin-password
+Environment=CALIBRE_WEB_ADMIN_PASSWORD_FILE=/run/secrets/calibre-web-admin-password
+Environment=TRUSTED_PROXIES=192.0.2.10
+Volume=calibre-books:/books
+Volume=calibre-config:/config
+PublishPort=127.0.0.1:8080:8080
+PublishPort=127.0.0.1:8083:8083
+HealthCmd=["/usr/local/bin/divbast-calibre","health"]
+
+[Install]
+WantedBy=default.target
+```
+
+### Docker and Compose
+
+Docker takes the Podman command without `--read-only-tmpfs=false` and
+`--health-cmd`, and runs the image's `HEALTHCHECK` itself. `docker run`
+has no secrets outside Swarm, so in place of the two `--secret` lines,
+mount the folder that holds the two files, read-only:
+`-v /srv/calibre/secrets:/run/secrets:ro`, with the files named as the
+`_FILE` variables say. With Compose:
+
+```yaml
+services:
+  calibre:
+    image: ghcr.io/divbast/calibre:latest
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      CALIBRE_ADMIN_PASSWORD_FILE: /run/secrets/calibre-admin-password
+      CALIBRE_WEB_ADMIN_PASSWORD_FILE: /run/secrets/calibre-web-admin-password
+      TRUSTED_PROXIES: 192.0.2.10
+    secrets:
+      - calibre-admin-password
+      - calibre-web-admin-password
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=2g
+    volumes:
+      - calibre-books:/books
+      - calibre-config:/config
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8083:8083"
+secrets:
+  calibre-admin-password:
+    file: ./secrets/calibre-admin-password
+  calibre-web-admin-password:
+    file: ./secrets/calibre-web-admin-password
+volumes:
+  calibre-books:
+  calibre-config:
+```
+
+Compose mounts each secret's file as it is, at `/run/secrets/<name>`, and
+does not change its owner or its mode, so the file on the host must be
+readable by 65532: as root, `chown 65532:65532 secrets/*` and
+`chmod 0400 secrets/*`. The same holds for the files in the folder that
+`docker run` mounts.
+
+### Kubernetes
+
+Make the Secret from the two files first, so that no password is written
+in the manifest:
+
+```bash
+kubectl create secret generic calibre-passwords \
+  --from-file=calibre-admin-password=./calibre-admin-password \
+  --from-file=calibre-web-admin-password=./calibre-web-admin-password
+```
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: calibre
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: calibre}
+  template:
+    metadata:
+      labels: {app: calibre}
+    spec:
+      securityContext:
+        runAsUser: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: calibre
+          image: ghcr.io/divbast/calibre:latest
+          env:
+            - name: CALIBRE_ADMIN_PASSWORD_FILE
+              value: /run/secrets/calibre/calibre-admin-password
+            - name: CALIBRE_WEB_ADMIN_PASSWORD_FILE
+              value: /run/secrets/calibre/calibre-web-admin-password
+            - name: TRUSTED_PROXIES
+              value: 10.42.0.0/16
+          ports:
+            - {name: content, containerPort: 8080}
+            - {name: web, containerPort: 8083}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: books, mountPath: /books}
+            - {name: config, mountPath: /config}
+            - {name: tmp, mountPath: /tmp}
+            - {name: passwords, mountPath: /run/secrets/calibre, readOnly: true}
+          startupProbe:
+            exec:
+              command: ["/usr/local/bin/divbast-calibre", "health"]
+            periodSeconds: 2
+            timeoutSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+              command: ["/usr/local/bin/divbast-calibre", "health"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: books
+          persistentVolumeClaim: {claimName: calibre-books}
+        - name: config
+          persistentVolumeClaim: {claimName: calibre-config}
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 2Gi}
+        - name: passwords
+          secret:
+            secretName: calibre-passwords
+            defaultMode: 0440
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: calibre
+spec:
+  selector: {app: calibre}
+  ports:
+    - {name: content, port: 8080, targetPort: content}
+    - {name: web, port: 8083, targetPort: web}
+```
+
+- `fsGroup` gives the volumes and the Secret's files to group 65532,
+  which the image runs as, so the apps can write the volumes and read the
+  passwords. `defaultMode: 0440` lets that group read the passwords, and
+  no one else.
+- One replica, and `Recreate`: two Content Servers must never open one
+  library at once.
+- An `emptyDir` cannot be mounted `noexec`, as the `--tmpfs` above is.
+  With `medium: Memory`, what `/tmp` holds counts as the pod's memory.
+  <!-- tmp-size -->
+- The probes run the image's own health check, `divbast-calibre health`,
+  as Docker and Podman do; see [Health](#health).
+- `TRUSTED_PROXIES` is a whole pod network here, k3s's default
+  `10.42.0.0/16`, so that the forwarded headers of the Ingress
+  controller's pods are kept. Every pod in that range is then trusted:
+  where the Ingress controller's addresses are fixed, list those instead.
+
+### First start
+
+On each start, PID 1 makes what is not there yet, and changes nothing
+that is. On a first start, on empty volumes, it makes:
+
+- an empty Calibre library in `/books`, when `/books` holds no
+  `metadata.db`;
+- the Content Server's users, in `/config/calibre/users.sqlite`: `admin`,
+  with the password `CALIBRE_ADMIN_PASSWORD` gives, and `calibre-web`, a
+  read-only user of the image's own, whose random password is in
+  `/config/calibre/internal-password`, mode 0600;
+- Calibre-Web's settings, in `/config/calibre-web/app.db`: its `admin`,
+  with the password `CALIBRE_WEB_ADMIN_PASSWORD` gives, and the settings
+  the image needs, which
+  [Calibre-Web's first settings](#calibre-webs-first-settings) lists.
+  Calibre-Web's own default password, `admin123`, never works: the image
+  writes yours before Calibre-Web first starts.
+
+The two passwords come from:
+
+- `CALIBRE_ADMIN_PASSWORD`, or `CALIBRE_ADMIN_PASSWORD_FILE` naming a file
+  that holds it: the Content Server's `admin`, on port 8080;
+- `CALIBRE_WEB_ADMIN_PASSWORD`, or `CALIBRE_WEB_ADMIN_PASSWORD_FILE`:
+  Calibre-Web's `admin`, on port 8083.
+
+Each is needed only while its account is still to be made. The start
+refuses both forms of one set at once, an empty value, and an empty file.
+One newline at a file's end, `\n` or `\r\n`, is not part of the password.
+Both passwords must follow Calibre-Web's default password rules:
+
+- at least 8 characters;
+- a digit, a lower-case letter and an upper-case letter;
+- a character that is not a letter, not white space and not a digit 0-9,
+  such as `!` or `#`;
+- no line break.
+
+The Content Server's password must also hold no control character and no
+invisible formatting character, which Calibre refuses. A password that
+breaks a rule stops the start at once, exit 1, before anything is
+written, with one line that names the variable and the rule, and never
+the password:
+
+```text
+divbast-calibre: CALIBRE_ADMIN_PASSWORD_FILE: the password needs at least one digit (both admin passwords must follow Calibre-Web's default password rules)
+```
+
+Once the accounts exist, PID 1 changes nothing in their files and reads
+neither variable: you can remove both, and the secrets, after the first
+start. To change a password later, use each app: the Content Server's
+[users](#the-content-servers-users), and Calibre-Web's own admin pages.
+The passwords never appear on a command line, in a log, or in the
+environment of a program PID 1 starts: PID 1 gives each one to the program
+that writes it on its standard input, and removes the four variables from
+its own environment before it starts the apps.
+
+When measured on arm64, a first start was healthy in 2.4 to 2.8 seconds,
+and a later start in 1.3 seconds. A stop (SIGTERM) gives each app 8
+seconds to end before PID 1 kills it; an idle container stopped in under 2
+seconds, with exit 0.
+
+### `/books` and `/config`
+
+The image carries an empty `/books` and an empty `/config`, both owned by
+65532, and declares no `VOLUME`. A new named volume takes its owner from
+the folder on first mount, so `-v calibre-books:/books` just works.
+
+- `/books` is the Calibre library: the folder that holds `metadata.db` and
+  a folder for each author. An empty one gets a new, empty library.
+- `/config` holds `calibre/`, the Content Server's users and Calibre's own
+  settings, and `calibre-web/`, Calibre-Web's settings, its key and its
+  cache. The image makes both folders mode 0700.
+- A `/books` or a `/config` that 65532 cannot write, such as a bind mount
+  that root made, or a library a desktop Calibre left owned by your own
+  user, stops the start at once, exit 1, with one line naming the folder
+  or the file, and uid 65532. Give the folder, and everything in it, to
+  65532, instead of running the image as root: `chown -R 65532:65532
+  <dir>` as root, or under rootless Podman
+  `podman unshare chown -R 65532:65532 <dir>`. For a Podman bind mount,
+  `:U` does the same at each start, as in `-v ./books:/books:U`, which
+  takes longer the larger the library is.
+- On an SELinux host, such as Fedora or RHEL, a bind mount also needs
+  Podman to relabel it, or the container cannot use it: add `:Z`, as in
+  `-v ./books:/books:Z`. `:Z` keeps the folder to this container alone.
+- With no mount at all, the read-only root refuses the first write, and
+  the start stops at once, exit 1, with the same line, ending in
+  `read-only file system`.
+
+### A library from a desktop Calibre
+
+Stop the desktop Calibre, and keep a copy of the library's folder. Give
+the folder to 65532, as above, and mount it at `/books`. Never open
+`/books` with another Calibre program while the image runs: Calibre allows
+one program to open a library at a time.
+
+**A newer Calibre may upgrade a library once, one way.** The first time a
+newer Calibre opens a library, it may upgrade the library's database, and
+an older Calibre may then not open it again. That holds for a library from
+a desktop Calibre older than the image's, and for each new image that
+brings a newer Calibre. Back up `/books` before the image first opens a
+library, and before you move to a new image.
+
+### `/tmp`
+
+Calibre keeps its temporary files and its cache in `/tmp`, through
+`CALIBRE_TEMP_DIR` and `CALIBRE_CACHE_DIRECTORY`, and PID 1 keeps its
+state file there, `/tmp/divbast-calibre/state.json`. The examples give it
+2 GiB. <!-- tmp-size --> In the image's measurements, uploads,
+conversions, covers and thumbnails used at most 432 KiB of it.
+ImageMagick's own policy lets it write up to 2 GiB of temporary files
+there. A tmpfs keeps its files in memory, so what `/tmp` holds counts as
+the container's memory.
+
+## Configuration
+
+Both apps keep their settings in `/config`, which their own pages write.
+PID 1 reads three settings from the environment: the two passwords, each
+as a value or a `_FILE`, on first start alone, and `TRUSTED_PROXIES`, at
+each start.
+
+### Calibre-Web's first settings
+
+On a `/config` with no `calibre-web/app.db`, the image writes these, and
+Calibre-Web keeps its own defaults for the rest:
+
+- the library, `/books`;
+- the folder of Calibre's programs, `/opt/calibre-bin`, which holds
+  Calibre's `ebook-convert` and the image's `calibredb`;
+- kepubify and unrar, `/usr/local/bin/kepubify` and
+  `/usr/local/bin/unrar`;
+- its port, 18083, on 127.0.0.1, behind PID 1;
+- its log, to the container's log;
+- uploads, allowed.
+
+From then on, Calibre-Web's admin pages own every setting, and the image
+never writes the file again. Leave the library, the folder of Calibre's
+programs and the port as the image set them: PID 1 sends port 8083's
+requests to 127.0.0.1:18083, and Calibre-Web reads the library through
+the image's `calibredb`, as
+[How the two apps stay in step](#how-the-two-apps-stay-in-step) says. An
+`app.db` from another image keeps that image's settings.
+
+### The Content Server's users
+
+The Content Server's users are in `/config/calibre/users.sqlite`. Manage
+them with Calibre's own `calibre-server --manage-users`, in the running
+container. The image has no shell, so give the program's full path:
+
+```bash
+docker exec -it calibre /opt/calibre/calibre-server --userdb /config/calibre/users.sqlite --manage-users
+```
+
+It asks what to do: add a user, change one (its password, or whether it
+may change the library), or remove one. For a script, name the command
+after `--`. `add` and `chpass` read the password from standard input,
+and `add --readonly` makes a user who can read the library but not change
+it:
+
+```bash
+docker exec -i calibre /opt/calibre/calibre-server --userdb /config/calibre/users.sqlite --manage-users -- add --readonly alice < alice-password
+docker exec calibre /opt/calibre/calibre-server --userdb /config/calibre/users.sqlite --manage-users -- list
+```
+
+- **Always give `--userdb /config/calibre/users.sqlite`.** Without it,
+  Calibre makes and changes another file,
+  `/config/calibre/server-users.sqlite`, which the Content Server never
+  reads.
+- Calibre takes all of standard input as the password, so the file must
+  not end in a newline: Calibre refuses a password that holds a line
+  break.
+- A change takes effect at once: the running Content Server reads the
+  file each time a user logs in.
+- Leave `calibre-web` as it is. Calibre-Web reads books through the
+  Content Server as that user, and the health check logs in as it, both
+  with the password in `/config/calibre/internal-password`.
+- The image's environment already names `/config/calibre` as Calibre's
+  settings folder (`CALIBRE_CONFIG_DIRECTORY`), and `exec` keeps it, so
+  the command needs nothing more. `podman exec` takes the same arguments;
+  in Kubernetes, `kubectl exec -it deploy/calibre --` and then the same.
+
+### How the two apps stay in step
+
+Both apps use the one library in `/books`, and each keeps its own view of
+it. The Content Server does not see a change another program makes to the
+library until it starts again, and Calibre-Web must reconnect to the
+library to see one. So PID 1 looks at the library's database,
+`/books/metadata.db`, every second, and tells which app made each change
+from the requests it passed on to each:
+
+- When Calibre-Web changes the library, PID 1 restarts the Content Server,
+  which then reads the library again.
+- When the Content Server changes it, PID 1 tells Calibre-Web to
+  reconnect to the library, which is quick, and Calibre-Web keeps
+  running.
+- The app that made a change is never reloaded for it.
+
+PID 1 first waits until the library has had no change for 5 seconds. It
+restarts the Content Server only when no request to it is still being
+answered and no conversion it started is still running. A conversion
+counts as running until it ends, or until 360 seconds (6 minutes) after
+its start or the last check on its status, when the Content Server forgets
+it. Neither reload waits more than 10 minutes, from the first change that
+called for it.
+
+While a restart of the Content Server waits, port 8080 refuses each
+request that would change the library: it answers `503 Service
+Unavailable`, with `Retry-After: 10` and a one-line reason. Reading still
+works, and so do the status checks of a running conversion, so that the
+conversion can end. During the restart itself, port 8080 answers 503 to
+every request. A planned restart of the Content Server counts as healthy
+for up to 2 minutes.
+
+Calibre allows one program to open a library at a time, and the Content
+Server has it open. So Calibre-Web's calls to Calibre's `calibredb`,
+which it makes to download a book with its metadata written in and before
+it converts a book, go to the image's `calibredb`, which sends them to the
+Content Server as the read-only user `calibre-web`. It refuses every other
+call.
+
+### Behind a reverse proxy
+
+Point the proxy at port 8080 for the Content Server and port 8083 for
+Calibre-Web. PID 1 answers on both and passes each request to its app on
+loopback, so each app sees every request come from 127.0.0.1.
+`TRUSTED_PROXIES` says whose forwarding headers reach the apps:
+
+- It lists IP addresses and CIDR ranges, separated by commas, such as
+  `192.0.2.10,198.51.100.0/24`. An entry that is neither stops the start,
+  exit 1, with a line naming it. Unset or empty, it lists no one.
+- From a listed source, PID 1 keeps `X-Forwarded-*`, `Forwarded`,
+  `X-Real-IP`, `X-Scheme`, `X-Script-Name` and Calibre-Web's login header,
+  and adds the source's address to `X-Forwarded-For`.
+- From any other source, it removes all of them, and sets
+  `X-Forwarded-For` to the source's address itself.
+- On port 8080, it removes Calibre-Web's login header from every source:
+  the Content Server has no use for it.
+
+List the address your proxy connects from, as the container sees it, such
+as the address of a proxy container on the same network. A CIDR range
+trusts every address in it.
+
+Calibre-Web reads `X-Script-Name`, to serve under a path such as
+`/calibre-web/`, and `X-Scheme` and `X-Forwarded-Host`, for the links it
+writes, only when they reach it: a proxy that sends them must be listed.
+The image starts the Content Server with no URL prefix, so serve it at the
+root of a host name of its own, such as `https://books.example.com/`.
+
+**Calibre-Web's reverse-proxy login.** Calibre-Web can log a user in by a
+header that its proxy sets, such as `X-Remote-User`, when you turn that on
+in its admin pages. Behind the image, that works only through a listed
+proxy: PID 1 removes the header, by the name Calibre-Web's settings give
+it, from every other source. Leave Calibre-Web's own list of trusted proxy
+addresses at its default, `127.0.0.1,::1`: every request reaches
+Calibre-Web from PID 1, on loopback, so `TRUSTED_PROXIES` is the list that
+decides.
+
+After each change made in Calibre-Web's admin pages, PID 1 reads the
+header's name again, which takes about a second, and requests from
+unlisted sources wait meanwhile. If that read fails, port 8083 answers
+`503` to unlisted sources, with `Retry-After: 10`, until a read works. PID
+1 tries again at most once a second, and gives each read 10 seconds.
+
+**Limits per address.** Behind PID 1, as behind any reverse proxy,
+Calibre-Web sees every client as 127.0.0.1, so its limits per address are
+shared by all clients:
+
+- Kobo sync takes 3 requests a minute from one address, and each request
+  with a valid Kobo token clears the count. So three requests with a wrong
+  token within a minute, from any device, hold back every Kobo for up to a
+  minute.
+- Public registration, when you turn it on, takes 3 requests a minute and
+  40 a day from one address: here, from all clients together.
+
+Calibre-Web's limits on logins and on OPDS count per user name, so they
+are not shared. `/reconnect` on port 8083 answers 404: only PID 1 calls
+it, on loopback.
+
+### What the image turns off
+
+- **Calibre-Web's updater** (`UPDATER_AVAILABLE = False`), as upstream's
+  packaged builds do: the image's files are read-only, and a new
+  Calibre-Web arrives as a new image.
+- **The Content Server's Bonjour announcement** (`--disable-use-bonjour`):
+  it would announce the container's own address, which other devices on
+  your network cannot reach. With it off, nothing in the image listens on
+  UDP.
+- **Calibre-Web's Google Drive storage** (PyDrive2 and oauth2client). Its
+  library requires oauth2client, a sign-in package with no release since
+  2018, and older cryptography than Calibre-Web itself needs: cryptography
+  older than 44, and pyOpenSSL 24.2.1 or older, where Calibre-Web needs
+  cryptography 50 or newer. Calibre-Web's database settings page then
+  does not offer Google Drive. Every other optional part of Calibre-Web is
+  installed: Gmail, Goodreads, LDAP, OAuth sign-in, the metadata
+  providers, comics and Kobo sync.
+- **Mesa and LLVM.** Calibre's PDF output draws its pages in software, with
+  no graphics card, so the image ships no graphics drivers, nor the LLVM
+  and z3 they bring. The package entries of libEGL and libGLX, `libegl1`
+  and `libglx0`, therefore each name a dependency that is not installed,
+  `libegl-mesa0` and `libglx-mesa0`.
+
+### PDF output
+
+Calibre makes a PDF with QtWebEngine, Chromium's engine, under its default
+sandbox: a seccomp-bpf filter on each process that draws pages. The
+sandbox's other layer, namespaces of its own, cannot start under the
+image's restrictions, and Calibre's log says so.
+
+### ImageMagick
+
+Calibre-Web makes covers and thumbnails with ImageMagick, under the
+image's own policy, `imagemagick/policy.xml`. It denies every format but
+those Calibre-Web uses: PDF, which it reads alone, through Ghostscript,
+and JPEG, PNG, WebP, GIF, TIFF and BMP. Its limits and its other rules are
+upstream's own secure policy: no delegate program runs, and no `@file` or
+`|command` path is read. Ghostscript is built into ImageMagick, not run as
+a program, so a PDF's first page still becomes its cover. ImageMagick's
+XML support is on, for the XMP metadata a PDF can carry. The build proves
+the policy: a PDF reads to a JPEG, and SVG, MSL, PostScript and EPS are
+refused, and so is writing a PDF.
+
+### Names that are not ASCII
+
+glibc's `C.utf8` locale ships, from `libc-bin`, so Qt, and with it
+Calibre, runs with a UTF-8 locale. Titles and authors in Greek, in
+Japanese and in accented Latin letters worked on both ports when tested.
+Calibre names the folders and files it makes in ASCII,
+`Ñandú` as `Nandu`, and Calibre-Web names those it makes in Unicode; both
+apps work with both kinds of name.
+
+### When an app stops
+
+If either app stops on its own, PID 1 starts it again, while the other
+goes on serving. It waits 1 second the first time, then twice as long
+each time the app stops again, up to a minute, and back to 1 second once
+the app has run for 10 minutes. Calibre-Web's own Restart, in its admin
+pages, starts Calibre-Web again in the same process. Its Shutdown ends
+Calibre-Web, and PID 1 then starts it again.
+
+### Not in the image
+
+- Calibre logs `Fontconfig error: No writable cache directories` three
+  times as it starts: the root is read-only, and fontconfig reads the
+  fonts with no cache.
+- Calibre-Web warns that it finds no time zone setting, and uses UTC. The
+  image carries the time zone data: set `TZ`, such as
+  `TZ=Europe/Berlin`, for another.
+- Calibre-Web warns that it keeps its rate limits in memory: they start
+  again from zero each time Calibre-Web starts.
 
 ## Health
 
-A server that answers can still be broken, so the image ships its own probe
-and declares a `HEALTHCHECK`. Docker runs it with no configuration.
+`divbast-calibre health`, from inside the container:
 
-Podman does not. Podman's `libimage` reads a healthcheck only out of a
-Docker-media-type manifest, and divbast images are published as an OCI
-index, so Podman's inspection path never looks at the config's healthcheck
-field — [podman/podman#25454](https://github.com/containers/podman/issues/25454)
-and [#18904](https://github.com/containers/podman/issues/18904) track it. A
-Podman user passes it explicitly:
+- reads the state file PID 1 keeps, `/tmp/divbast-calibre/state.json`,
+  which says whether each app is up;
+- asks the Content Server, on 127.0.0.1:18080, for `/ajax/library-info`,
+  logged in as `calibre-web`. The answer must be 200, and its `Server`
+  header must name this image's Calibre version exactly, such as
+  `calibre 9.19.0`;
+- asks Calibre-Web, on 127.0.0.1:18083, for `/login`, which must answer
+  200. Calibre-Web's version is on a page that needs a login, and the root
+  filesystem is read-only, so the Calibre-Web that answers can only be the
+  image's;
+- checks, in the container's `/proc/net/tcp6` and `/proc/net/tcp`, that
+  ports 8080 and 8083 are listened on, on every address.
 
-```bash
-podman run -d --health-cmd '["/usr/local/bin/template","health"]' localhost/oci-image-template:dev
-```
+A Content Server that PID 1 is restarting, to load a change, counts as
+healthy for up to 2 minutes, and is not asked. Each app's check gets 4
+seconds, so the whole check ends within the `HEALTHCHECK`'s 10-second
+timeout. It prints nothing and exits 0 when all of it holds, and exits 1
+with one line for each part that does not: `state: <reason>`,
+`calibre-server: <reason>`, `calibre-web: <reason>` or
+`listen: <reason>`.
 
-Under a Quadlet, the equivalent is:
-
-```
-HealthCmd=["/usr/local/bin/template","health"]
-```
-
-The array above has no leading `"CMD"` on purpose: Podman before 5.8.0
-re-splits an array that starts with `"CMD"` into one useless token, so
-omitting it is what makes the check work across versions.
-
-| | |
-|---|---|
-| `/usr/local/bin/template health` | The in-container probe `HEALTHCHECK` runs. Asserts `/healthz` is 200 **and** `GET /` on 8080 answers exactly the page. Prints nothing when healthy; otherwise one line, `<check>: <reason>`, for each half that failed, and exits 1 |
-| `http://127.0.0.1:8081/healthz` | 200 `ok` while the server runs |
-
-`/healthz` never goes through 8080's routes, so only the page's exact
-answer shows the app port serves the app. The probe asks both. Port 8081
-serves nothing else and is meant to stay unpublished.
-
-There is no shell in this image, so a health command given as a plain
-string, which Docker and Podman both run through `/bin/sh -c`, can never
-pass.
+The image's `HEALTHCHECK` runs it every 30 seconds, with a timeout of 10
+seconds, a start period of 60 seconds and 3 retries; Docker reads it.
+Podman never sees the `HEALTHCHECK` of an image published as an OCI
+index, so pass the same command as
+`--health-cmd '["/usr/local/bin/divbast-calibre","health"]'`, or
+`HealthCmd=` in a Quadlet, as above. In Kubernetes, the probes above run
+the same command. The command must be given in exec form: there is no
+shell to run a command given as one string.
 
 ## The pipeline
 
-Three workflows, each a short caller of divbast/ci's reusable workflow of
-the same purpose, at one pinned release of it:
-
-- `build.yml` calls `app-check.yml` on every push, pull request, daily slot
-  and button run: lint, the image built for amd64 and arm64 once every
-  image the Containerfile builds from is verified, the acceptance suite against each under
-  Docker and rootless Podman, and the scan. Its `required` job is the one
-  check `main`'s ruleset requires. From the daily slot and the button, on
-  `main`, it then calls `app-publish.yml`.
-- `renovate.yml` runs Renovate, as below.
-- `stall.yml` fails, and GitHub emails you, when a Renovate pull request
-  has been open more than 14 days or red or pending for more than a day, or
-  when Renovate has not succeeded in a day.
+Every pull request and push to main runs divbast/ci's `app-check.yml`:
+lint (the Go code, the Containerfile, the workflows, REUSE, the Python
+helpers, and the Python locks against their pins), a build for amd64 and
+arm64 once every image the build starts from is verified, the acceptance
+suite under Docker and rootless Podman, and the scan. A daily slot
+publishes main when it has moved since the last image.
 
 ### Publishing
 
@@ -172,366 +733,99 @@ A merge never publishes. The daily slot publishes `main` when `main` moved
 since the commit the published `:latest` was built from, and the button, a
 manual run of `build` from `main`, publishes at once.
 
-Here, the publish job calls `app-publish.yml` with `rehearse: true`. It
-decides against `ghcr.io/divbast/oci-image-template`, which has never been
-published, so every slot and button run publishes. It then starts a
-registry inside the job and publishes there instead: it pushes each
-architecture, merges them into one index under a staging tag, attests the
-index and verifies that attestation, then tags it with the version and
-`latest`, and checks both tags as an anonymous client. The attestation is
-real, signed for this repository with Sigstore. The run says
-`rehearsal: nothing was published to ghcr.io` in a warning and on its
-summary.
+Its publish job calls divbast/ci's `app-publish.yml` with
+`image: ghcr.io/divbast/calibre`. A publish pushes an index of the amd64
+and arm64 images, attests it, verifies the attestation, and only then tags
+it three times: with Calibre's version, the Containerfile's
+`CALIBRE_VERSION`; with the pair of both apps, its `IMAGE_PAIR`, such as
+`9.19.0-cw.79d3571`; and with `latest`. It ends by checking, as an
+anonymous client, that all three tags are the attested index.
 
-Only this repository may rehearse: since divbast/ci v2, `rehearse: true`
-fails the publish job anywhere else.
+### The scan
+
+The scan fails a change only on a HIGH or CRITICAL finding that the
+published image does not have already. No image scan can tell what is in
+Calibre's own build, which carries its own libraries and Python packages,
+or what ImageMagick, Ghostscript, kepubify and unrar are, since they are
+built here. So the image names them in two SBOMs, which its
+`io.github.divbast.scan.sboms` label declares, and the scan judges them by
+those:
+
+- `/usr/local/share/divbast/calibre-bundle.cdx.json`: the libraries and
+  Python packages in Calibre's build, from the lists at Calibre's signed
+  tag. The image marks this SBOM advisory, in its
+  `io.github.divbast.scan.sboms.advisory` label: Calibre's build is
+  upstream's own signed build of those libraries, which this repository
+  cannot patch, so the scan lists its findings and never fails on them.
+- `/usr/local/share/divbast/tools.cdx.json`: ImageMagick, Ghostscript and
+  the jbig2dec inside it, kepubify and unrar. Its findings block as every
+  other finding does.
 
 ## Dependency updates
 
-Every input the Containerfile names is pinned by digest: the `golang`
-builder and the distroless runtime. The app is the standard library alone,
-so `go.mod` requires nothing but divbast/ci's harness for its tests. The
-PHP layer's fragment pins the FrankenPHP binary by the digest of
-`ghcr.io/divbast/frankenphp:baikal`, and the .NET layer's Containerfile
-its three Docker Hardened Images by tag and digest.
+Renovate opens a pull request for each new input, and merges it once every
+check passes:
 
-A pin only moves through a pull request, and
-[Renovate](https://docs.renovatebot.com/) opens those. It runs every
-morning, after every merge to `main`, whenever CI finishes on one of its
-branches and when the Dependency Dashboard issue is edited, from
-`.github/workflows/renovate.yml`, as the divbast org's `divbast-renovate`
-GitHub App. Its settings are divbast/renovate-config's shared presets, and
-`renovate.json` adds nothing to them. The pull requests Renovate opens here
-are:
+- each Calibre release. The update empties the two checksums of Calibre's
+  build, and the pull request fills them in from the files
+  download.calibre-ebook.com serves then; the build checks their
+  signature. A release signed by any other key stops at its pull request,
+  until a person checks the new key and replaces
+  `keys/calibre-release.asc`;
+- each new commit on Calibre-Web's master branch, with the checksum of its
+  archive filled in the same way. Nothing signs Calibre-Web's commits, so
+  the acceptance suite is what holds a broken one back;
+- each ImageMagick release and each kepubify release, by tag and commit;
+  the build checks that the tag still names the commit;
+- each Ghostscript release, with the checksum of its tarball filled in
+  the same way;
+- each unrar tarball RARLAB's page links, betas included. RARLAB
+  publishes no checksum, so the pull request records the sha256 of the
+  tarball RARLAB served when it was made, and the build holds the
+  download to it from then on;
+- each line of `python/pins.txt`;
+- the Docker Hardened Images, with the Python runtime and its `-dev`
+  image in one pull request, and the packages of the toolchain and
+  runtimelibs stages, all in one pull request.
 
-- A new Go release, as a `golang` image, arrives as a pull request that
-  moves the builder's tag and digest. A new distroless image arrives as one
-  that moves its digest, and CI verifies its signature before it builds.
-- A new `:baikal` binary arrives as a pull request that moves the PHP
-  layer's digest, and a new `cc-debian13` image as one that moves the PHP
-  layer's runtime digest.
-- A new .NET SDK or ASP.NET Core image arrives as one pull request that
-  moves both of the .NET layer's pins, since an app needs the runtime
-  patch its SDK knows, and a new Go image for its probe as one of its own.
-  dhi.io answers nothing without a login, so `renovate.yml` passes Renovate
-  the DHI login divbast/infra keeps here. The demo has no `global.json`,
-  and its target framework follows its SDK, so a .NET major moves nothing
-  else in the template.
-- A release of divbast/ci arrives as one pull request that moves every
-  workflow's pin of it together.
-- The toolchain in `mise.toml` and PHPStan in `layers/php/composer.lock`
-  move by pull requests of their own.
+A pull request that moves Calibre, Calibre-Web, Ghostscript, unrar or a
+pin runs `go run ./cmd/divbast-pins` too, which fills in the checksums the
+update emptied, writes the Python locks again from Calibre-Web's
+requirements at the new commit and the pins, and writes `IMAGE_PAIR`, so
+they all move together. A pin outside the range Calibre-Web's
+requirements allow fails that command, so its pull request never merges.
 
-Renovate merges its own pull requests once every check on one has passed,
-while the repository variable `CALIBRE_AUTOMERGE` is `enabled`.
-Three kinds first wait for someone to approve them on the Dependency
-Dashboard: a new major version of divbast/ci, a raise of `go.mod`'s `go`
-line, and a .NET major. Any other value of the variable, or none, stops
-merging from the next run, and Renovate goes on opening and rebasing pull
-requests for a person to merge:
+`python/pins.txt` holds one `package==version` a line, each under a
+comment saying which kind it is: `# upstream leaves it unpinned: <its
+requirement>`, `# needed by <package> …`, for a package a pinned one
+requires and upstream's list leaves out, or `# builds <packages> …`, for
+the build venv alone. A package upstream lists that the image leaves out
+is under `# leaves out: <why>`, by its name alone: PyDrive2 and
+oauth2client.
 
-    gh variable set CALIBRE_AUTOMERGE --body disabled
+The repository variable `CALIBRE_AUTOMERGE` stops Renovate merging when
+it is anything but `enabled`:
 
-After a merge it rebases every open update the merge left behind, so each
-is tested again against the new `main` before it merges. It merges with a
-squash, which GitHub signs, because `main` accepts only signed commits.
-
-The App, the `renovate` environment holding its key,
-`CALIBRE_AUTOMERGE` and this repository's rulesets are all
-managed from [divbast/infra](https://github.com/divbast/infra).
-
-## Making a new app
-
-The repository is made from this template by its entry in divbast/infra,
-which names this repository as its `template` and also gives it its
-rulesets, its `renovate` environment and its kill switch. divbast/infra's
-README says how. The copy arrives as one commit, and nothing in it is
-renamed for you. Then, in this order:
-
-0. **Go, PHP, .NET or Python.** Choose once, first, since every step after
-   names the files of one of them. Each of the four deletes `layers/`, so
-   `.dockerignore`'s `layers/` line goes too, with its comment, and with
-   it the lint and verification of each layer the app does not move. The
-   .NET layer's are the justfile's `dotnet-lint` recipe and the three
-   `lint` lines after PHPStan's, which run it, hadolint and
-   `docker build --check` on the layer. The Python layer's are the
-   justfile's `python-lint` recipe and the three `lint` lines after those,
-   which run it, hadolint and `docker build --check` on that layer, and
-   `mise.toml`'s ruff and ty, with their comment. What `lint`'s comment
-   says of the layers, dhi.io and the network goes with them, and so does
-   `verify-containerfiles` on `build.yml`'s `check` job, with its comment.
-   An app other than a .NET one drops the lines for a local dotnet build's
-   output as well,
-   `src/**/bin` and `src/**/obj` in `.dockerignore` and `**/src/**/bin/`
-   and `**/src/**/obj/` in `.gitignore`, each pair with its comment: kept,
-   they would hide any `bin/` or `obj/` under a `src/` of the app's own
-   from git and the build.
-   - **A Go app** keeps the Go core: `cmd/template`, `internal/server` and
-     the Containerfile as they are. Delete `layers/`, the justfile's
-     `composer install` and PHPStan lines, and `php: true` on `build.yml`'s
-     `check` job.
-   - **A PHP app** served by FrankenPHP moves `layers/php` into place:
-     `git mv layers/php/* .` (its `caddy/`, `php/`, `public/`, `rootfs/`,
-     `phpstan.neon` and Composer's files), then deletes `cmd/`,
-     `internal/` and `layers/`. In the Containerfile, the fragment's lines
-     replace the Go app's, each where its comment says: the
-     `RUNTIME_IMAGE` `ARG`, the build stage and the `COPY` from it, the
-     `HEALTHCHECK` and the `ENTRYPOINT`. Its `FROM ${RUNTIME_IMAGE}` is
-     the Containerfile's own, already there, which stands in the fragment
-     for Renovate alone. The justfile's `setup` and
-     `lint` go back to `composer install` and
-     `vendor/bin/phpstan analyse --no-progress` at the root.
-     `test/acceptance/contract_test.go`'s `PID1`, `HealthCmd` and `Exec`
-     become FrankenPHP's, as the fragment's `ENTRYPOINT` and
-     `HEALTHCHECK` give them, with `Exec` its `version`.
-     [Baikal](https://github.com/divbast/baikal-oci-image) and
-     [LibreSpeed](https://github.com/divbast/librespeed-oci-image) are
-     the fully tested PHP apps to follow.
-   - **A .NET app** moves `layers/dotnet` into place, over the Go core;
-     [Prowlarr](https://github.com/divbast/prowlarr-oci-image) is the fully
-     tested .NET app to follow. The layer's `Containerfile` is a whole one,
-     written for the layout this leaves. From the repository's root:
-     1. `git rm -r cmd internal layers/php layers/python Containerfile`.
-     2. `git mv layers/dotnet/test/* test/`, beside `test/acceptance`.
-     3. `git mv layers/dotnet/Containerfile layers/dotnet/cmd layers/dotnet/internal layers/dotnet/src .`
-        Then delete the Containerfile's opening comment, on the layer and
-        this move, which no longer holds.
-     4. `rm -rf layers`: nothing tracked is left in it, but PHPStan's
-        `vendor/` may be.
-     5. In `cmd/divbast-template/main.go` and
-        `internal/probe/probe_test.go`, drop `/layers/dotnet` from the
-        probe's import path, which leaves
-        `github.com/divbast/oci-image-template/internal/probe` for step 1
-        to rename with the module.
-     6. In the justfile, delete `composer install` from `setup` and
-        PHPStan from its comment, every `lint` line but the first, and
-        the `dotnet-lint` and `python-lint` recipes. The first line's
-        `app-lint` lints the root Containerfile, now the .NET one, so
-        `lint`'s comment says the Docker daemon must be logged in to
-        dhi.io for its images.
-     7. On `build.yml`'s `check` job, delete `php: true` and
-        `verify-containerfiles`, each with its comment. `dhi-username` and
-        `DHI_TOKEN` stay, since the build reads dhi.io now.
-     8. In `test/acceptance/contract_test.go`, health moves to the app
-        port, beside the page: delete the `healthPort` constant and
-        `HealthOnly404`, and set `HealthPort: 0` and
-        `HealthPath: "/healthz"`. `binary` becomes the probe,
-        `/usr/local/bin/divbast-template`, which `Exec` and `healthCmd`
-        run, and `serverArgv`, PID 1's argv, the apphost alone:
-        `[]string{"/app/bin/Template"}`. Their comments follow.
-     9. In `test/acceptance/serves_test.go`, delete `"/healthz"` from
-        `refused`, and check with `harness.StatusIs` that GET `/healthz`
-        answers 200. The comments follow here too.
-     10. Give the app's entry in divbast/infra `dhi = true`, which writes
-         the DHI login the workflows pass.
-   - **A Python app** moves `layers/python` into place, over the Go core;
-     [SABnzbd](https://github.com/divbast/sabnzbd-oci-image) is the fully
-     tested Python app to follow. The layer's `Containerfile` is a whole
-     one, written for the layout this leaves. From the repository's root:
-     1. `git rm -r cmd internal layers/php layers/dotnet Containerfile`.
-     2. `git mv layers/python/Containerfile layers/python/cmd layers/python/internal layers/python/app layers/python/python layers/python/ruff.toml layers/python/ty.toml .`
-        Then delete the Containerfile's opening comment, on the layer and
-        this move, which no longer holds.
-     3. `rm -rf layers`: nothing tracked is left in it, but PHPStan's
-        `vendor/` may be.
-     4. In `cmd/divbast-template/main.go`, `internal/probe/probe_test.go`,
-        `cmd/divbast-pins/main.go` and `cmd/divbast-pins/main_test.go`,
-        drop `/layers/python` from the import paths, which leaves
-        `github.com/divbast/oci-image-template/internal/…` for step 1 to
-        rename with the module.
-     5. In the justfile, delete `composer install` from `setup` and
-        PHPStan from its comment, every `lint` line but the first, and the
-        `dotnet-lint` recipe. In `python-lint`, drop `cd layers/python && `
-        and `-C layers/python`, so it lints the root, and run it from
-        `lint`, after the first line. The first line's `app-lint` lints the
-        root Containerfile, now the Python one, so `lint`'s comment says
-        the Docker daemon must be logged in to dhi.io for its images, and
-        that the lint needs the network, for the locks.
-     6. On `build.yml`'s `check` job, delete `php: true` and
-        `verify-containerfiles`, each with its comment. `dhi-username` and
-        `DHI_TOKEN` stay, since the build reads dhi.io now.
-     7. In `test/acceptance/contract_test.go`, health moves to the app
-        port, beside the page: delete the `healthPort` constant and
-        `HealthOnly404`, and set `HealthPort: 0` and
-        `HealthPath: "/healthz"`. `binary` becomes the probe,
-        `/usr/local/bin/divbast-template`, which `Exec` and `healthCmd`
-        run, and `serverArgv`, PID 1's argv, the demo on the venv's Python:
-        `[]string{"/app/venv/bin/python", "-OO", "/app/template/server.py"}`.
-        Their comments follow.
-     8. In `test/acceptance/serves_test.go`, delete `"/healthz"` from
-        `refused`, and check with `harness.StatusIs` that GET `/healthz`
-        answers 200. The comments follow here too.
-     9. In `renovate.json`, add SABnzbd's managers for `python/pins.txt`
-        and for the toolchain stage's DHI packages, with their
-        `packageRules`. A pull request that moves a pin runs
-        `go run ./cmd/divbast-pins`, so the locks move with it, which
-        divbast/ci's Renovate allows. A toolchain pin DHI has since
-        deleted fails the build until Renovate's first run moves it.
-     10. Give the app's entry in divbast/infra `dhi = true`, which writes
-         the DHI login the workflows pass.
-1. **Names.** Pick the app's name, `<app>`: the image will be
-   `ghcr.io/divbast/<app>`. Set it in:
-   - `go.mod`'s module path, `github.com/divbast/<repository>`, and every
-     import of it, in `cmd/` and `internal/` and their tests, which a PHP
-     app no longer has;
-   - the justfile's `APP`, from which `IMAGE`, `ARCHIVE` and `PUBLISHED`
-     follow;
-   - the Containerfile: `TEMPLATE_VERSION`, renamed `<APP>_VERSION` and set
-     to the app's version, the `LABEL`s, and the paths below;
-   - a Go app's binary, `cmd/<app>`, and `/usr/local/bin/<app>` wherever
-     the Containerfile and `test/acceptance/contract_test.go` name it;
-   - a PHP app's health probe and its endpoint,
-     `rootfs/usr/local/bin/<app>-health` and
-     `rootfs/usr/local/share/<app>-health/`, `php/<app>.ini` and the
-     served tree, `/var/www/<app>`, everywhere each is named: the
-     Containerfile, the Caddyfile, `phpstan.neon`, the probe's messages
-     and `test/acceptance/contract_test.go`;
-   - a .NET app's probe, `cmd/divbast-template` and
-     `/usr/local/bin/divbast-template`, as `divbast-<app>`, everywhere it
-     is named: the Containerfile, the probe's messages and
-     `test/acceptance/contract_test.go`. The demo keeps its names,
-     `src/Template`, `Template.csproj` and `/app/bin/Template`, until step
-     6 replaces it with the app, whose project file's name is its
-     apphost's, and so PID 1's path;
-   - a Python app's probe, `cmd/divbast-template` and
-     `/usr/local/bin/divbast-template`, as `divbast-<app>`, everywhere it
-     is named: the Containerfile, the probe's messages and
-     `test/acceptance/contract_test.go`; and the app's tree,
-     `/app/template`, as `/app/<app>`, in the Containerfile and
-     `serverArgv`;
-   - `build.yml`'s `version-arg` and `description`;
-   - this README and `CLAUDE.md`.
-2. **The crons.** Give `build.yml`'s daily slot and `stall.yml`'s check
-   times of their own, and update the comments that give their times and
-   their neighbours', so that neither starts with another repository's:
-   the organisation runs at most 20 jobs at once. `renovate.yml`'s cron can
-   stay as it is, since divbast's repositories share it.
-3. **The kill switch.** In `renovate.yml`, replace
-   `OCI_IMAGE_TEMPLATE_AUTOMERGE`, in the job and in the comment above it,
-   with the variable the app's entry in divbast/infra names, such as
-   `LIBRESPEED_AUTOMERGE`. Do the same in this README and `CLAUDE.md`.
-4. **The upstream pin.** Pin what the app is built from in the
-   Containerfile, by version and by digest or commit, and give it a
-   Renovate manager in `renovate.json` in the same change: a `customManagers`
-   entry for an `ARG` no `FROM` reads, and a `packageRules` entry naming its
-   labels and commit prefix. LibreSpeed's `renovate.json` and its fetch
-   stage are a worked example. A .NET app's fetch stage replaces the
-   backend stage's `COPY src/ ./`, as Prowlarr's does. A Python app's
-   replaces the fetch stage's `COPY app/ /app/template/`, as SABnzbd's
-   does. One built from an upstream that ships a `requirements.txt` names
-   it in `python/requirements.in`, by its one `-r` line at the commit
-   `ARG`, and Renovate's post-upgrade task for the upstream runs
-   `go run ./cmd/divbast-pins`, so the locks move with each release. An
-   app that ships
-   the upstream's files adds the upstream's licence to the Containerfile's
-   `org.opencontainers.image.licenses` `LABEL`, as `CLAUDE.md` requires.
-   Which licence each file in the repository carries is REUSE's to say, by
-   its SPDX header, not this README's.
-5. **The contract.** Set what the app's confinement contract says, in
-   `test/acceptance/contract_test.go` and in the Containerfile alike, then
-   in the tables here and in `CLAUDE.md`, the Volume row among them: the
-   `/tmp` size, the paths `HealthOnly404` asks the health port to refuse,
-   PID 1's argv, the health command, `Exec`, a binary of the app's own
-   that runs to exit 0, and the `HEALTHCHECK` timings. An app
-   with a bootstrap keeps `PID1` as the server's argv, which the bootstrap
-   execs. The template leaves the contract's optional fields unset, and an
-   app may need them: `Mounts` for a volume, so an app with `/data` mounts
-   one there; `Env` for the environment the app reads; `ExtraTCPPorts` for
-   a listener past the two ports; `Ready` for what must be true before the
-   checks run, past both ports answering; `AppProbe`, a Go main package,
-   or `PHP`, an `app.php` run under the app's PHP, for probe subcommands
-   of the app's own; and `Scenario` to run the contract once for each
-   configuration it supports. Each is
-   documented on `contract.Config`, `go -C .ci doc ./contract Config`, and
-   divbast/ci's README, under "Go", says how the package reaches the suite.
-6. **The app.** Replace the page with the app, keeping `:8080` an
-   allowlist, and give the acceptance suite a test for each thing it
-   serves. Replace the page half of the probe, and add the app's own checks
-   to `/healthz`. A Go app replaces `internal/server`; a PHP app replaces
-   `public/index.php` and the Caddyfile's `:8080` routes, and lists every
-   PHP file the image ships in `phpstan.neon`'s `paths`; a .NET app
-   deletes the demo, `src/`, which its fetch stage replaced at step 4, and
-   names the app's project where the Containerfile names
-   `Template/Template.csproj`, and its apphost wherever `/app/bin/Template`
-   is named. A Python app deletes the demo, `app/`, which its fetch stage
-   replaced at step 4, names its entry point in the `ENTRYPOINT` and
-   `serverArgv`, lists what it installs in `python/requirements.in` and
-   what that leaves out in `python/pins.txt`, and runs
-   `go run ./cmd/divbast-pins`. With no Python of its own left, it also
-   drops ruff and ty, `python-lint`'s first line, `ruff.toml` and
-   `ty.toml`.
-7. **A PHP app's own binary.** A Go or .NET app skips this. Add the app to
-   divbast/frankenphp in one pull request there:
-   - `apps/<app>.env`, holding each of `PHP_EXTENSIONS`,
-     `PHP_EXTENSION_LIBS`, `EXPECTED_EXTENSIONS` and
-     `REQUIRED_GD_FEATURES` exactly once. The first three must not be
-     empty; `REQUIRED_GD_FEATURES` is empty for an app without gd.
-     `EXPECTED_EXTENSIONS` is every module the binary loads, in lower case;
-   - `<app>` in both `app:` lists in `.github/workflows/build.yml`, the
-     `build` job's matrix (`app: [baikal, librespeed]`) and the `publish`
-     job's;
-   - a `slots-<app>` job, named `slots (<app>)`, in
-     `.github/workflows/stall.yml`, as `slots-baikal` is, with
-     `published: ghcr.io/divbast/frankenphp:<app>`;
-   - `<app>` in the list that `TestRepositoryApps`, in
-     `internal/appenv/appenv_test.go`, expects:
-     `[]string{"baikal", "librespeed"}`;
-   - frankenphp's README: a row for `:<app>` in its table of tags, and the
-     app's entry in its list of the C libraries each app builds that spc
-     takes from their newest release.
-
-   Once that merges and `ghcr.io/divbast/frankenphp:<app>` is published,
-   point the Containerfile's one `COPY --from=` at it by that digest. Until
-   then the app can keep building on `:baikal`: CI verifies the
-   attestation of any divbast/frankenphp binary.
-8. **The publish switch.** In `build.yml`'s `publish` job, set `image` to
-   `ghcr.io/divbast/<app>` and remove `rehearse: true`. Do this once the app
-   is ready to publish, not before: it is what lets the first image reach
-   `ghcr.io/divbast/<app>` and creates the package. Until then each daily
-   slot's publish job fails by design, because divbast/ci rehearses only
-   in `divbast/oci-image-template`, so a repository made from the template
-   that keeps `rehearse: true` goes red at its publish job. Once that is on
-   `main`, publish once by the button: run `build` from `main` by hand.
-   Confirm that the package is public. The run's last step pulls both tags
-   as an anonymous client, and fails while the package is private; a
-   package that starts private is made public in its settings, and the
-   button run again. **Then** turn slots on in `stall.yml`: remove its
-   `checks` line, whose default runs all four checks, slots among them,
-   and add `published: ghcr.io/divbast/<app>:latest` under its `with`.
-   LibreSpeed's `stall.yml` is that shape: `published` alone. In that
-   order: until the image is public, slots count every slot run since the
-   repository was made as a lost slot. Then rewrite what says the app
-   rehearses: this README's opening, "Running", where it says there is no
-   published image, and "Publishing"; `CLAUDE.md`'s opening, where it says
-   the app publishes nothing to ghcr.io, and its bullet on the rehearsal;
-   and the comment above `rehearse` in `build.yml`. The one above `checks`
-   in `stall.yml` goes with that line.
-9. **The organisation's profile.** Add the image's row to the table in
-   divbast/.github's profile README.
+```bash
+gh variable set CALIBRE_AUTOMERGE --body disabled
+```
 
 ## Development
 
-- `just setup` fetches divbast/ci into `.ci/` at the commit the workflows
-  pin, then installs the pinned toolchain from `mise.toml` and PHPStan,
-  for the PHP layer, from `layers/php/composer.lock`. PHP and Composer
-  come from the host.
-- `just scan` reads the published image with
-  [skopeo](https://github.com/containers/skopeo), which must be on `PATH`;
-  so must it for `just ci`. CI runners already have it.
-- `just build` builds the image locally, without verifying the images it
-  builds from; `just ci-tools && .ci/bin/divbast-verify-images` does, with
-  cosign from `mise.toml`, and gh 2.102.0 or newer for a FrankenPHP
-  binary. With `-containerfile layers/dotnet/Containerfile` or
-  `-containerfile layers/python/Containerfile`, and `DHI_USERNAME` and
-  `DHI_TOKEN` set, it verifies that layer's.
-- `just test` builds, then runs the acceptance suite against the image,
-  under `ENGINE`, docker unless it says podman.
-- `just lint` runs every lint gate, and needs a running Docker daemon, for
-  `docker build --check`, logged in to dhi.io for the .NET and Python
-  layers' images, which it reads and, for the .NET layer, runs; and the
-  network, since `python-lint` checks the Python layer's locks against
-  PyPI. `python-lint` also runs ruff and ty over the layer's demo.
-- `just ci` runs every gate, the scan included. Run it before committing.
+- `just setup` checks out divbast/ci at the commit the workflows pin and
+  installs the toolchain.
+- `just build`, `just acceptance` and `just test` build the image and run
+  the acceptance suite, under the engine `ENGINE` names.
+- `just lint` runs every lint gate, ruff and ty over the Python helpers,
+  and `go run ./cmd/divbast-pins -check`, which needs the network. It
+  needs a running Docker daemon too, logged in to dhi.io, for
+  `docker build --check`.
+- `go run ./cmd/divbast-pins` writes `python/requirements.lock`,
+  `python/build.lock` and `python/files.txt` from the pins, after a change
+  to `python/pins.txt` or to the Containerfile's pins. It fills in a
+  checksum only when it is empty, and writes `IMAGE_PAIR`: after moving
+  `CALIBRE_VERSION`, `CALIBRE_WEB_COMMIT`, Ghostscript's version and tag,
+  or `UNRAR_VERSION` by hand, empty its checksums, then run it.
 
 The recipes that call GitHub, pinact's and zizmor's, read a fine-grained
 personal access token from `GITHUB_TOKEN`: divbast/ci's README says which,
