@@ -47,7 +47,11 @@ type Options struct {
 	ServerBase, WebBase string
 	// PasswordFile holds the internal user's password.
 	PasswordFile string
-	// Version is the Calibre version the image is built from, which the
+	// Version is the Calibre version the image is built from, in full, as
+	// the build gives it: three parts, such as 9.19.0. The Content Server
+	// always names itself "calibre <major>.<minor>.<patch>", and the
+	// comparison is exact, so a shorter Version, such as the 9.19 that
+	// calibredb --version prints, never matches.
 	// Content Server must name.
 	Version string
 	// Within bounds each app's check: the whole exchange with it.
@@ -114,8 +118,13 @@ func Probe(ctx context.Context, o *Options, stderr io.Writer) int {
 func checkApp(ctx context.Context, st supervise.State, limit time.Duration, now time.Time, check func(context.Context) error) error {
 	switch {
 	case st.Planned:
-		if d := now.Sub(st.Since).Round(time.Second); d >= limit {
-			return fmt.Errorf("restarting for %s, which is not under the %s allowed", d, limit)
+		// The exact age is compared; it is rounded only to be shown
+		d := now.Sub(st.Since)
+		switch {
+		case d < 0:
+			return fmt.Errorf("restarting since a time %s in the future, so the state file cannot be trusted", (-d).Round(time.Second))
+		case d >= limit:
+			return fmt.Errorf("restarting for %s, which is not under the %s allowed", d.Round(time.Second), limit)
 		}
 		return nil
 	case !st.Up:
@@ -163,6 +172,7 @@ func checkServer(ctx context.Context, o *Options) error {
 	if status != http.StatusOK {
 		return fmt.Errorf("GET %s answered %d, want 200", libraryInfo, status)
 	}
+	// Exact, not a prefix: see Options.Version
 	if want := "calibre " + o.Version; header.Get("Server") != want {
 		return fmt.Errorf("its Server header is %q, want %q", header.Get("Server"), want)
 	}
@@ -174,7 +184,9 @@ func checkServer(ctx context.Context, o *Options) error {
 const internalUser = "calibre-web"
 
 // checkWeb asks Calibre-Web for webPage, in o.Within, and returns why it
-// is not healthy.
+// is not healthy. Only the status is judged: the root is read-only, so the
+// Calibre-Web that runs can only be the image's, and the page that names
+// its version needs a login.
 func checkWeb(ctx context.Context, o *Options) error {
 	ctx, cancel := context.WithTimeout(ctx, o.Within)
 	defer cancel()

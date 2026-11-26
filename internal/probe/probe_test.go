@@ -214,6 +214,29 @@ func TestHealth(t *testing.T) {
 			},
 		},
 		{
+			name: "planned restart down for 1m59.5s",
+			edit: func(t *testing.T, o *Options) {
+				t.Helper()
+				o.State = state(t, states{"calibre-server": down(true, 119*time.Second+500*time.Millisecond), "calibre-web": up()})
+			},
+		},
+		{
+			name: "planned restart that began in the future",
+			edit: func(t *testing.T, o *Options) {
+				t.Helper()
+				o.State = state(t, states{"calibre-server": down(true, -time.Minute), "calibre-web": up()})
+			},
+			lines: []string{"calibre-server: restarting since a time 1m0s in the future"},
+		},
+		{
+			name: "a shorter version than the server names",
+			edit: func(t *testing.T, o *Options) {
+				t.Helper()
+				o.Version = "9.19"
+			},
+			lines: []string{`calibre-server: its Server header is "calibre 9.19.0", want "calibre 9.19"`},
+		},
+		{
 			name: "planned restart down for 1m59s",
 			edit: func(t *testing.T, o *Options) {
 				t.Helper()
