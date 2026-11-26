@@ -1,0 +1,440 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee>
+
+// Package supervise keeps PID 1's children, calibre-server and
+// Calibre-Web, running. A child that ends on its own is started again in
+// its place, after a wait that grows each time it ends again, while the
+// other child goes on serving. Restart stops and starts a child on
+// purpose.
+//
+// One goroutine collects the exit status of every child process, so PID 1
+// also collects the processes the kernel passes to it when their own
+// parent ends first. Exec runs a one-off program the same way.
+package supervise
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"sync"
+	"syscall"
+	"time"
+)
+
+// Child is a program the supervisor keeps running.
+type Child struct {
+	// Name names the child in State, Restart, OnChange and the log:
+	// calibre-server or calibre-web.
+	Name string
+	// Argv is the command line. Argv[0] is the program's path, which is
+	// not looked up in PATH.
+	Argv []string
+	// Env is the child's environment; nil means PID 1's own.
+	Env []string
+}
+
+// Options are the supervisor's times.
+type Options struct {
+	// Min is the wait before a child that ended on its own is started
+	// again. Each time it ends again, the wait doubles, up to Max.
+	Min, Max time.Duration
+	// ResetAfter is how long a start must run for the wait to go back to
+	// Min when it ends.
+	ResetAfter time.Duration
+	// Grace is how long a child has to end after SIGTERM, when Run stops
+	// or Restart stops it, before SIGKILL goes to its process group.
+	Grace time.Duration
+}
+
+// State is what the supervisor knows of one child.
+type State struct {
+	// Up is true from the child's start until the supervisor sees it end.
+	Up bool `json:"up"`
+	// Planned is true from a Restart until the child's next start.
+	Planned bool `json:"planned"`
+	// Since is the time Up or Planned last changed.
+	Since time.Time `json:"since"`
+}
+
+// errStopping answers a Restart that Run's end overtook.
+var errStopping = errors.New("supervise: the supervisor is stopping")
+
+// Supervisor keeps its children running until Run's context ends.
+type Supervisor struct {
+	kids   []*kid
+	byName map[string]*kid
+	o      Options
+	start  func(Child) (*os.Process, error)
+
+	// The tests replace these.
+	clk         clock
+	logw        io.Writer
+	execStarted func(pid int) // called by Exec between the start and the claim
+
+	exits    chan exit
+	ticks    chan tick
+	requests chan request
+	serving  chan struct{} // closed when Run begins
+	stopping chan struct{} // closed when Run's context has ended
+
+	mu       sync.Mutex // guards states and onChange
+	states   map[string]State
+	onChange func(name string, state State)
+}
+
+// kid is a child as Run's goroutine sees it. No other goroutine touches
+// one.
+type kid struct {
+	Child
+	proc    *os.Process   // nil while the child is not running
+	started time.Time     // when proc was started
+	delay   time.Duration // the wait before the start after the next end
+	planned bool          // a Restart is under way
+	gen     int           // the latest timer's number; a tick with another is stale
+	waiting []chan<- error
+}
+
+// exit is a child's end, as the reaper saw it.
+type exit struct {
+	k  *kid
+	p  *os.Process
+	ws syscall.WaitStatus
+}
+
+// tick is a kid's timer firing: the wait before a start has passed, or
+// the grace of a Restart's stop.
+type tick struct {
+	k   *kid
+	gen int
+}
+
+type request struct {
+	name  string
+	reply chan<- error
+}
+
+type clock interface {
+	Now() time.Time
+	After(d time.Duration) <-chan time.Time
+}
+
+type realClock struct{}
+
+func (realClock) Now() time.Time                         { return time.Now() }
+func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+// New returns a supervisor of children, which Run starts with start, or
+// with Start when start is nil.
+func New(children []Child, o Options, start func(Child) (*os.Process, error)) *Supervisor {
+	if start == nil {
+		start = Start
+	}
+	s := &Supervisor{
+		kids:     make([]*kid, 0, len(children)),
+		byName:   make(map[string]*kid, len(children)),
+		o:        o,
+		start:    start,
+		clk:      realClock{},
+		logw:     os.Stderr,
+		exits:    make(chan exit),
+		ticks:    make(chan tick),
+		requests: make(chan request),
+		serving:  make(chan struct{}),
+		stopping: make(chan struct{}),
+		states:   make(map[string]State, len(children)),
+	}
+	for _, c := range children {
+		k := &kid{Child: c, delay: o.Min}
+		s.kids = append(s.kids, k)
+		s.byName[c.Name] = k
+	}
+	return s
+}
+
+// Start starts c as New does when given no start function: in a process
+// group of its own, so that a signal from a terminal reaches PID 1 alone,
+// which passes SIGTERM on itself, and so that SIGKILL to the group also
+// ends the processes c starts. Its stdin is /dev/null, and its stdout and
+// stderr are PID 1's.
+func Start(c Child) (*os.Process, error) {
+	return startProcess(c)
+}
+
+// startProcess is Start, with extra as the child's file descriptors from
+// 3 on.
+func startProcess(c Child, extra ...*os.File) (*os.Process, error) {
+	if len(c.Argv) == 0 {
+		return nil, fmt.Errorf("supervise: %s has no command", c.Name)
+	}
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = null.Close() }()
+	return os.StartProcess(c.Argv[0], c.Argv, &os.ProcAttr{
+		Env:   c.Env,
+		Files: append([]*os.File{null, os.Stdout, os.Stderr}, extra...),
+		Sys:   &syscall.SysProcAttr{Setpgid: true},
+	})
+}
+
+// Run starts every child and keeps each running until ctx ends. Then it
+// sends SIGTERM to each child, and SIGKILL to the process group of each
+// still running Options.Grace later. It returns once every child has
+// ended: 0, or 1 when one had to be killed. Run is called once.
+func (s *Supervisor) Run(ctx context.Context) (exitCode int) {
+	reap.ensure()
+	close(s.serving)
+	for _, k := range s.kids {
+		s.launch(k)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return s.stop()
+		case e := <-s.exits:
+			s.exited(e)
+		case t := <-s.ticks:
+			s.ticked(t)
+		case r := <-s.requests:
+			s.restart(r)
+		}
+	}
+}
+
+// Restart stops the child named name with SIGTERM, and starts it again as
+// soon as it has ended, with no wait. If it has not ended Options.Grace
+// after the SIGTERM, it and its process group get SIGKILL. If the child is
+// waiting to be started again after ending on its own, it is started at
+// once instead. A Restart while another is under way, or a child ending
+// on its own meanwhile, still gives one start. Restart returns once that
+// start is made, with its error, if any.
+func (s *Supervisor) Restart(name string) error {
+	select {
+	case <-s.serving:
+	default:
+		return errors.New("supervise: Restart before Run")
+	}
+	reply := make(chan error, 1)
+	select {
+	case s.requests <- request{name: name, reply: reply}:
+	case <-s.stopping:
+		return errStopping
+	}
+	return <-reply
+}
+
+// State returns the child named name's state. Before Run, and for a name
+// the supervisor does not know, it is the zero State.
+func (s *Supervisor) State(name string) State {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.states[name]
+}
+
+// OnChange has f called after each change of a child's State, with the new
+// State, whose Since is the time of the change: when the child is
+// started, whether for the first time, after ending on its own, or for a
+// Restart; when a Restart begins; and when the child ends. f runs on Run's
+// goroutine, one call at a time and in the order of the changes, so it
+// must not call Restart.
+func (s *Supervisor) OnChange(f func(name string, state State)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onChange = f
+}
+
+// launch starts k. A start that fails is treated as an end: k waits, then
+// is started again.
+func (s *Supervisor) launch(k *kid) {
+	at := s.clk.Now()
+	reap.begin()
+	p, err := s.start(k.Child)
+	if err != nil {
+		reap.abandon()
+		k.planned = false
+		s.setState(k, false, false)
+		s.answer(k, err)
+		s.logf("%s could not start: %v; trying again in %s", k.Name, err, k.delay)
+		s.backoff(k)
+		return
+	}
+	reap.started()
+	ended := reap.claim(p.Pid)
+	k.proc, k.started, k.planned = p, at, false
+	s.setState(k, true, false)
+	s.answer(k, nil)
+	go func() {
+		ws := <-ended
+		s.exits <- exit{k: k, p: p, ws: ws}
+	}()
+}
+
+// exited handles k's end while Run serves.
+func (s *Supervisor) exited(e exit) {
+	k := e.k
+	_ = e.p.Release()
+	k.proc = nil
+	if k.planned {
+		s.setState(k, false, true)
+		s.launch(k)
+		return
+	}
+	if s.clk.Now().Sub(k.started) >= s.o.ResetAfter {
+		k.delay = s.o.Min
+	}
+	s.setState(k, false, false)
+	s.logf("%s %s; starting it again in %s", k.Name, describe(e.ws), k.delay)
+	s.backoff(k)
+}
+
+// backoff has k started again after its wait, and doubles the next one.
+func (s *Supervisor) backoff(k *kid) {
+	s.after(k, k.delay)
+	k.delay = min(2*k.delay, s.o.Max)
+}
+
+// after sets a timer for k, to fire in d, and makes every earlier one
+// stale. A tick that is k's latest still acts only on the state it was set
+// for: the wait before a start, while k is down, or a Restart's grace,
+// while k is stopping for it.
+func (s *Supervisor) after(k *kid, d time.Duration) {
+	k.gen++
+	t := tick{k: k, gen: k.gen}
+	fire := s.clk.After(d)
+	go func() {
+		select {
+		case <-fire:
+		case <-s.stopping:
+			return
+		}
+		select {
+		case s.ticks <- t:
+		case <-s.stopping:
+		}
+	}()
+}
+
+func (s *Supervisor) ticked(t tick) {
+	k := t.k
+	switch {
+	case t.gen != k.gen:
+	case k.proc == nil:
+		s.launch(k)
+	case k.planned:
+		s.logf("%s did not stop within %s; killing it", k.Name, s.o.Grace)
+		kill(k.proc)
+	}
+}
+
+func (s *Supervisor) restart(r request) {
+	k := s.byName[r.name]
+	if k == nil {
+		r.reply <- fmt.Errorf("supervise: no child is named %q", r.name)
+		return
+	}
+	k.waiting = append(k.waiting, r.reply)
+	switch {
+	case k.planned:
+		// Its stop is under way, and the start after it answers this
+		// Restart too
+	case k.proc == nil:
+		// Waiting to start again after ending on its own: start it now
+		k.planned = true
+		s.setState(k, false, true)
+		s.launch(k)
+	default:
+		k.planned = true
+		s.setState(k, true, true)
+		_ = k.proc.Signal(syscall.SIGTERM)
+		s.after(k, s.o.Grace)
+	}
+}
+
+// stop ends every child, and returns Run's exit code.
+func (s *Supervisor) stop() int {
+	close(s.stopping)
+	running := 0
+	for _, k := range s.kids {
+		s.answer(k, errStopping)
+		if k.proc != nil {
+			running++
+			_ = k.proc.Signal(syscall.SIGTERM)
+		}
+	}
+	if running == 0 {
+		return 0
+	}
+	code := 0
+	grace := s.clk.After(s.o.Grace)
+	for running > 0 {
+		select {
+		case e := <-s.exits:
+			_ = e.p.Release()
+			e.k.proc = nil
+			s.setState(e.k, false, false)
+			running--
+		case <-grace:
+			grace = nil
+			code = 1
+			for _, k := range s.kids {
+				if k.proc != nil {
+					s.logf("%s did not stop within %s; killing it", k.Name, s.o.Grace)
+					kill(k.proc)
+				}
+			}
+		}
+	}
+	return code
+}
+
+// kill sends SIGKILL to p's process group, which also holds the processes
+// p started, and to p itself, in case a start gave it no group of its own.
+func kill(p *os.Process) {
+	if p.Pid > 0 {
+		_ = syscall.Kill(-p.Pid, syscall.SIGKILL)
+	}
+	_ = p.Kill()
+}
+
+// answer replies err to the Restart calls waiting on k's start.
+func (s *Supervisor) answer(k *kid, err error) {
+	for _, reply := range k.waiting {
+		reply <- err
+	}
+	k.waiting = nil
+}
+
+// setState records k's state, when it changed, and tells OnChange's f.
+func (s *Supervisor) setState(k *kid, up, planned bool) {
+	s.mu.Lock()
+	if old := s.states[k.Name]; old.Up == up && old.Planned == planned {
+		s.mu.Unlock()
+		return
+	}
+	st := State{Up: up, Planned: planned, Since: s.clk.Now()}
+	s.states[k.Name] = st
+	f := s.onChange
+	s.mu.Unlock()
+	if f != nil {
+		f(k.Name, st)
+	}
+}
+
+func (s *Supervisor) logf(format string, args ...any) {
+	_, _ = fmt.Fprintf(s.logw, "divbast-calibre: "+format+"\n", args...)
+}
+
+// describe says how a process ended.
+func describe(ws syscall.WaitStatus) string {
+	switch {
+	case ws.Exited():
+		return fmt.Sprintf("exited with status %d", ws.ExitStatus())
+	case ws.Signaled():
+		return fmt.Sprintf("was ended by signal %d (%s)", ws.Signal(), ws.Signal())
+	default:
+		return fmt.Sprintf("ended with wait status %#x", uint32(ws))
+	}
+}
