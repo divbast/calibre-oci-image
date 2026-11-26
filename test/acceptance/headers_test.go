@@ -47,17 +47,17 @@ func failedLogin(user string) *regexp.Regexp {
 // failWith logs in to s's Calibre-Web as a user that does not exist, with
 // X-Forwarded-For forged, and returns the address Calibre-Web then logs
 // as the client's.
-func failWith(t *testing.T, s *harness.Serving, forged string) string {
-	t.Helper()
-	ctx := t.Context()
-	user := "nobody-" + random(t, 8, lower)
-	resp, err := newWebSession(t, s).login(ctx, user, "wrong", http.Header{"X-Forwarded-For": {forged}})
+func failWith(tb testing.TB, s *harness.Serving, forged string) string {
+	tb.Helper()
+	ctx := tb.Context()
+	user := "nobody-" + random(tb, 8, lower)
+	resp, err := newWebSession(tb, s).login(ctx, user, "wrong", http.Header{"X-Forwarded-For": {forged}})
 	if err != nil || resp.Status != http.StatusUnauthorized {
-		t.Fatalf("a login as %s: %v, status %d, want 401", user, err, resp.Status)
+		tb.Fatalf("a login as %s: %v, status %d, want 401", user, err, resp.Status)
 	}
 	m, err := waitLog(ctx, s.C, failedLogin(user), startWithin)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	return m[1]
 }
@@ -66,16 +66,16 @@ func failWith(t *testing.T, s *harness.Serving, forged string) string {
 // as an admin does: the new user form as the page gives it, with a name,
 // an e-mail address and the password. Calibre-Web answers with the same
 // page, and a message that says whether it made the user.
-func addUser(t *testing.T, w *webSession, name, pw string) {
-	t.Helper()
-	ctx := t.Context()
+func addUser(tb testing.TB, w *webSession, name, pw string) {
+	tb.Helper()
+	ctx := tb.Context()
 	resp, err := w.get(ctx, "/admin/user/new", nil)
 	if err != nil || resp.Status != http.StatusOK {
-		t.Fatalf("Calibre-Web's new user page: %v, status %d", err, resp.Status)
+		tb.Fatalf("Calibre-Web's new user page: %v, status %d", err, resp.Status)
 	}
 	form, err := formValues(resp.Body, "email")
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	form.Set("name", name)
 	form.Set("email", name+"@example.invalid")
@@ -84,7 +84,7 @@ func addUser(t *testing.T, w *webSession, name, pw string) {
 	resp, err = w.post(ctx, "/admin/user/new", form, nil)
 	want := "success: User '" + name + "' created"
 	if err != nil || resp.Status != http.StatusOK || !slices.Contains(flashed(resp.Body), want) {
-		t.Fatalf("creating the user %s in Calibre-Web: %v, status %d, want 200 and %q: the page says %s", name, err, resp.Status, want, none(flashed(resp.Body)))
+		tb.Fatalf("creating the user %s in Calibre-Web: %v, status %d, want 200 and %q: the page says %s", name, err, resp.Status, want, none(flashed(resp.Body)))
 	}
 }
 
@@ -93,22 +93,22 @@ func addUser(t *testing.T, w *webSession, name, pw string) {
 // whole form as the page gives it, with that setting checked and the
 // header named. Calibre-Web's own list of the proxies it trusts keeps its
 // default, 127.0.0.1 and ::1, which is where PID 1's requests come from.
-func headerLogin(t *testing.T, w *webSession, name string) {
-	t.Helper()
-	ctx := t.Context()
+func headerLogin(tb testing.TB, w *webSession, name string) {
+	tb.Helper()
+	ctx := tb.Context()
 	resp, err := w.get(ctx, "/admin/config", nil)
 	if err != nil || resp.Status != http.StatusOK {
-		t.Fatalf("Calibre-Web's configuration page: %v, status %d", err, resp.Status)
+		tb.Fatalf("Calibre-Web's configuration page: %v, status %d", err, resp.Status)
 	}
 	form, err := formValues(resp.Body, "config_port")
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	form.Set("config_allow_reverse_proxy_header_login", "on")
 	form.Set("config_reverse_proxy_login_header_name", name)
 	resp, err = w.post(ctx, "/admin/ajaxconfig", form, nil)
 	if err != nil || resp.Status != http.StatusOK {
-		t.Fatalf("saving Calibre-Web's configuration: %v, status %d", err, resp.Status)
+		tb.Fatalf("saving Calibre-Web's configuration: %v, status %d", err, resp.Status)
 	}
 	var saved struct {
 		Result []struct {
@@ -116,7 +116,7 @@ func headerLogin(t *testing.T, w *webSession, name string) {
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(resp.Body, &saved); err != nil || len(saved.Result) != 1 || saved.Result[0].Type != "success" {
-		t.Fatalf("Calibre-Web did not save its configuration: %v: %s", err, harness.Clip(string(resp.Body)))
+		tb.Fatalf("Calibre-Web did not save its configuration: %v: %s", err, harness.Clip(string(resp.Body)))
 	}
 }
 
@@ -136,11 +136,11 @@ func flashed(page []byte) []string {
 
 // notLoggedIn checks that Calibre-Web answered a request to a page that
 // needs a login by sending the client to its login page.
-func notLoggedIn(t *testing.T, what string, resp harness.Response, err error) {
-	t.Helper()
-	harness.Answers(t, what+": 302", http.StatusFound, resp, err)
+func notLoggedIn(tb testing.TB, what string, resp harness.Response, err error) {
+	tb.Helper()
+	harness.Answers(tb, what+": 302", http.StatusFound, resp, err)
 	if err == nil {
-		harness.Contains(t, what+": to the login page", "/login", resp.Header.Get("Location"))
+		harness.Contains(tb, what+": to the login page", "/login", resp.Header.Get("Location"))
 	}
 }
 
@@ -161,40 +161,41 @@ func notLoggedIn(t *testing.T, what string, resp harness.Response, err error) {
 func TestForwardedHeaders(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	ctx := t.Context()
-	network, err := e.Network(ctx, t, "", headersSubnet, false)
+	tb := redacting(t)
+	ctx := tb.Context()
+	network, err := e.Network(ctx, tb, "", headersSubnet, false)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
-	sec := newSecrets(t)
-	st := newStore(t, e)
-	reader, readerPW := "reader-"+random(t, 8, lower), password(t)
+	sec := newSecrets(tb)
+	st := newStore(tb, e)
+	reader, readerPW := "reader-"+random(tb, 8, lower), tb.password()
 	pws := append(sec.all(), readerPW)
-	checks := harness.NewChecks(t)
+	checks := harness.NewChecks(tb)
 
-	s := (&launch{env: sec.env(), mounts: append(st.mounts(), sec.mount()), network: network, ip: headersIP, passwords: pws}).serve(t, e, image)
-	peer := failWith(t, s, forgedUnlisted)
+	s := (&launch{env: sec.env(), mounts: append(st.mounts(), sec.mount()), network: network, ip: headersIP, passwords: pws}).serve(tb, e, image)
+	peer := failWith(tb, s, forgedUnlisted)
 	_, perr := netip.ParseAddr(peer)
 	checks.True("unlisted: Calibre-Web logs the address the request came from as the client's", peer != forgedUnlisted && perr == nil, peer)
-	harness.LogLacks(t, s.C, "unlisted: the forged X-Forwarded-For never reaches Calibre-Web's log", forgedUnlisted)
+	harness.LogLacks(tb, s.C, "unlisted: the forged X-Forwarded-For never reaches Calibre-Web's log", forgedUnlisted)
 
-	w := loginAdmin(t, s, sec.web)
-	addUser(t, w, reader, readerPW)
-	headerLogin(t, w, loginHeader)
+	w := loginAdmin(tb, s, sec.web)
+	addUser(tb, w, reader, readerPW)
+	headerLogin(tb, w, loginHeader)
 	resp, err := s.Health().Get(ctx, "/me", http.Header{loginHeader: {reader}})
-	notLoggedIn(t, "unlisted: a request with "+loginHeader+" is not logged in", resp, err)
-	if _, code := stop(t, e, s.C); code != 0 {
-		t.Fatalf("the first container exits %d when stopped", code)
+	notLoggedIn(tb, "unlisted: a request with "+loginHeader+" is not logged in", resp, err)
+	if _, code := stop(tb, e, s.C); code != 0 {
+		tb.Fatalf("the first container exits %d when stopped", code)
 	}
 
-	s = (&launch{env: map[string]string{trustedVar: peer}, mounts: st.mounts(), network: network, ip: headersIP, passwords: pws}).serve(t, e, image)
+	s = (&launch{env: map[string]string{trustedVar: peer}, mounts: st.mounts(), network: network, ip: headersIP, passwords: pws}).serve(tb, e, image)
 	resp, err = s.Health().Get(ctx, "/me", http.Header{loginHeader: {reader}})
-	harness.Answers(t, "listed: a request with "+loginHeader+" is logged in", http.StatusOK, resp, err)
+	harness.Answers(tb, "listed: a request with "+loginHeader+" is logged in", http.StatusOK, resp, err)
 	if err == nil {
-		harness.Contains(t, "listed: logged in as "+reader, reader+"&#39;s Profile", string(resp.Body))
+		harness.Contains(tb, "listed: logged in as "+reader, reader+"&#39;s Profile", string(resp.Body))
 	}
 	resp, err = s.Health().Get(ctx, "/me", nil)
-	notLoggedIn(t, "listed: a request without "+loginHeader+" is not logged in", resp, err)
-	got := failWith(t, s, forgedListed)
+	notLoggedIn(tb, "listed: a request without "+loginHeader+" is not logged in", resp, err)
+	got := failWith(tb, s, forgedListed)
 	harness.Equal(checks, "listed: Calibre-Web logs the forwarded address, then the client's", forgedListed+", "+peer, strings.TrimSpace(got))
 }

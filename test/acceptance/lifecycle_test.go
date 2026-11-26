@@ -22,41 +22,34 @@ const (
 	// stopWithin is PID 1's grace for the apps to stop, after which it
 	// kills them and exits 1.
 	stopWithin = 8 * time.Second
-	// downWithin bounds how long the shipped probe may take to see an app
-	// that was killed: it asks each app, whose port closed with it.
-	downWithin = 10 * time.Second
-	// reloadWithin bounds a planned reload of calibre-server: PID 1 waits
-	// for 5 s with no change to the library after the 10 s in which it
-	// tells whose change it was, then restarts it.
-	reloadWithin = 60 * time.Second
 	// zombieWithin bounds how long an ended process may stay a zombie
 	// before PID 1 collects it.
 	zombieWithin = 10 * time.Second
 )
 
-// started returns when c's engine last started it, and fails t if it is
+// started returns when c's engine last started it, and fails tb if it is
 // not running.
-func started(t *testing.T, c *harness.Container) time.Time {
-	t.Helper()
-	in, err := c.Inspect(t.Context())
+func started(tb testing.TB, c *harness.Container) time.Time {
+	tb.Helper()
+	in, err := c.Inspect(tb.Context())
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	if !in.State.Running {
-		t.Fatalf("%s is %s, not running", c, in.State.Status)
+		tb.Fatalf("%s is %s, not running", c, in.State.Status)
 	}
 	return in.State.StartedAt
 }
 
 // inPlace checks that c is the same container, started by the engine at
 // since and never again, with PID 1 still the image's command.
-func inPlace(t *testing.T, c *harness.Container, since time.Time) {
-	t.Helper()
-	checks := harness.NewChecks(t)
-	harness.Equal(checks, "the engine never restarted the container", since, started(t, c))
-	ps, err := processes(t.Context(), c)
+func inPlace(tb testing.TB, c *harness.Container, since time.Time) {
+	tb.Helper()
+	checks := harness.NewChecks(tb)
+	harness.Equal(checks, "the engine never restarted the container", since, started(tb, c))
+	ps, err := processes(tb.Context(), c)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	pid1 := "none"
 	for i := range ps {
@@ -67,32 +60,55 @@ func inPlace(t *testing.T, c *harness.Container, since time.Time) {
 	harness.Equal(checks, "PID 1 is still the image's command", strings.Join(serverArgv, " "), pid1)
 }
 
+// waitUpSince waits until PID 1's state file in c says app is up, since a
+// time after since.
+func waitUpSince(ctx context.Context, c *harness.Container, app string, since time.Time) error {
+	return harness.Poll(ctx, startWithin, healthEvery, func(ctx context.Context) error {
+		states, err := appStates(ctx, c)
+		switch {
+		case err != nil:
+			return harness.NotYet(err)
+		case !states[app].Up || !states[app].Since.After(since):
+			return harness.NotYet(fmt.Errorf("%s's state is %+v, not up since after %s", app, states[app], since))
+		}
+		return nil
+	})
+}
+
 // TestCrashRestartsInPlace kills each app in turn with SIGKILL, as a crash
-// ends it: the shipped probe reports the image unhealthy, then PID 1
-// starts the app again, as a new process, in the same container, and the
-// probe reports it healthy.
+// ends it. PID 1 says so in its log, starts the app again as a new
+// process, in the same container, and its state file has the app up since
+// after the kill; then the shipped probe reports the image healthy.
 func TestCrashRestartsInPlace(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	ctx := t.Context()
-	sec := newSecrets(t)
-	s := (&launch{env: sec.env(), mounts: append(newStore(t, e).mounts(), sec.mount()), passwords: sec.all()}).serve(t, e, image)
-	since := started(t, s.C)
-	checks := harness.NewChecks(t)
+	tb := redacting(t)
+	ctx := tb.Context()
+	sec := newSecrets(tb)
+	s := (&launch{env: sec.env(), mounts: append(newStore(tb, e).mounts(), sec.mount()), passwords: sec.all()}).serve(tb, e, image)
+	since := started(tb, s.C)
+	checks := harness.NewChecks(tb)
 	for _, app := range apps {
 		old, err := appPID(ctx, s.C, app)
 		if err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
-		kill(t, s.C, old)
-		err = waitHealth(ctx, s.C, false, downWithin)
-		checks.True(app+" killed: the probe reports the image unhealthy", err == nil, fmt.Sprint(err))
-		err = waitHealth(ctx, s.C, true, startWithin)
+		before, err := appStates(ctx, s.C)
+		if err != nil {
+			tb.Fatal(err)
+		}
+		kill(tb, s.C, old)
+		pid, err := waitNewPID(ctx, s.C, app, old)
+		checks.True(app+" killed: PID 1 starts it again, as a new process", err == nil, fmt.Sprintf("PID %d, then %d: %v", old, pid, err))
+		said := regexp.MustCompile("divbast-calibre: " + app + ` was ended by signal 9 \(killed\); starting it again in `)
+		_, err = waitLog(ctx, s.C, said, startWithin)
+		checks.True(app+" killed: PID 1 says it was killed, and starts it again", err == nil, fmt.Sprint(err))
+		err = waitUpSince(ctx, s.C, app, before[app].Since)
+		checks.True(app+" killed: PID 1's state file has it up again, since after the kill", err == nil, fmt.Sprint(err))
+		err = waitHealthy(ctx, s.C)
 		checks.True(app+" killed: the probe reports the image healthy again", err == nil, fmt.Sprint(err))
-		pid, err := appPID(ctx, s.C, app)
-		checks.True(app+" killed: it runs again, as a new process", err == nil && pid != old, fmt.Sprintf("PID %d, then %d: %v", old, pid, err))
 	}
-	inPlace(t, s.C, since)
+	inPlace(tb, s.C, since)
 }
 
 // TestCalibreWebButtons presses Calibre-Web's own Restart, then its own
@@ -103,41 +119,42 @@ func TestCrashRestartsInPlace(t *testing.T) {
 func TestCalibreWebButtons(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	ctx := t.Context()
-	sec := newSecrets(t)
-	s := (&launch{env: sec.env(), mounts: append(newStore(t, e).mounts(), sec.mount()), passwords: sec.all()}).serve(t, e, image)
-	since := started(t, s.C)
-	checks := harness.NewChecks(t)
-	w := loginAdmin(t, s, sec.web)
+	tb := redacting(t)
+	ctx := tb.Context()
+	sec := newSecrets(tb)
+	s := (&launch{env: sec.env(), mounts: append(newStore(tb, e).mounts(), sec.mount()), passwords: sec.all()}).serve(tb, e, image)
+	since := started(tb, s.C)
+	checks := harness.NewChecks(tb)
+	w := loginAdmin(tb, s, sec.web)
 	before, err := appPID(ctx, s.C, calibreWeb)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	press := func(what string, parameter int) {
-		t.Helper()
+		tb.Helper()
 		if _, gerr := w.get(ctx, "/admin/view", nil); gerr != nil {
-			t.Fatal(gerr)
+			tb.Fatal(gerr)
 		}
 		resp, perr := w.postJSON(ctx, "/shutdown", map[string]int{"parameter": parameter})
-		harness.Answers(t, what+": Calibre-Web answers the button", http.StatusOK, resp, perr)
+		harness.Answers(tb, what+": Calibre-Web answers the button", http.StatusOK, resp, perr)
 	}
 
 	press("Restart", 0)
 	_, err = waitLog(ctx, s.C, regexp.MustCompile("Performing restart of Calibre-Web"), startWithin)
 	checks.True("Restart: Calibre-Web restarts itself", err == nil, fmt.Sprint(err))
-	err = waitHealth(ctx, s.C, true, startWithin)
+	err = waitHealthy(ctx, s.C)
 	checks.True("Restart: the probe reports the image healthy again", err == nil, fmt.Sprint(err))
 	pid, err := appPID(ctx, s.C, calibreWeb)
 	checks.True("Restart: Calibre-Web keeps its PID", err == nil && pid == before, fmt.Sprintf("PID %d, then %d: %v", before, pid, err))
 
-	w = loginAdmin(t, s, sec.web)
+	w = loginAdmin(tb, s, sec.web)
 	press("Shutdown", 1)
-	pid, err = waitNewPID(ctx, s.C, calibreWeb, before, startWithin)
+	pid, err = waitNewPID(ctx, s.C, calibreWeb, before)
 	checks.True("Shutdown: PID 1 starts Calibre-Web again, as a new process", err == nil, fmt.Sprintf("PID %d, then %d: %v", before, pid, err))
-	harness.LogContains(t, s.C, "Shutdown: PID 1 says Calibre-Web ended, and starts it again", "divbast-calibre: calibre-web exited with status 0; starting it again")
-	err = waitHealth(ctx, s.C, true, startWithin)
+	harness.LogContains(tb, s.C, "Shutdown: PID 1 says Calibre-Web ended, and starts it again", "divbast-calibre: calibre-web exited with status 0; starting it again")
+	err = waitHealthy(ctx, s.C)
 	checks.True("Shutdown: the probe reports the image healthy again", err == nil, fmt.Sprint(err))
-	inPlace(t, s.C, since)
+	inPlace(tb, s.C, since)
 }
 
 // TestStop stops a serving container as a user does, with <engine> stop
@@ -145,36 +162,40 @@ func TestCalibreWebButtons(t *testing.T) {
 func TestStop(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	sec := newSecrets(t)
-	s := (&launch{env: sec.env(), mounts: append(newStore(t, e).mounts(), sec.mount()), passwords: sec.all()}).serve(t, e, image)
-	took, code := stop(t, e, s.C)
-	checks := harness.NewChecks(t)
+	tb := redacting(t)
+	sec := newSecrets(tb)
+	s := (&launch{env: sec.env(), mounts: append(newStore(tb, e).mounts(), sec.mount()), passwords: sec.all()}).serve(tb, e, image)
+	took, code := stop(tb, e, s.C)
+	checks := harness.NewChecks(tb)
 	harness.Equal(checks, "the container exits 0", 0, code)
 	checks.True("the stop takes under "+stopWithin.String(), took < stopWithin, took.String())
 }
 
 // serveLibrary serves the image on the fixture library, owned by uid
 // 65532, and returns it with an admin's session with Calibre-Web.
-func serveLibrary(t *testing.T, e harness.Engine, image string) (*harness.Serving, *webSession) {
-	t.Helper()
-	sec := newSecrets(t)
-	books := library(t, e, image, 65532)
+func serveLibrary(r *redactor, e harness.Engine, image string) (*harness.Serving, *webSession) {
+	r.Helper()
+	sec := newSecrets(r)
+	books := library(r, e, image, 65532)
 	s := (&launch{
 		env:       sec.env(),
-		mounts:    []harness.Mount{books, volume(t, e, configDir), sec.mount()},
+		mounts:    []harness.Mount{books, volume(r, e, configDir), sec.mount()},
 		passwords: sec.all(),
-	}).serve(t, e, image)
-	return s, loginAdmin(t, s, sec.web)
+	}).serve(r, e, image)
+	return s, loginAdmin(r, s, sec.web)
 }
 
 // reload edits the fixture book's title in Calibre-Web, and returns
-// calibre-server's new PID once PID 1 has restarted it to read the change.
-func reload(t *testing.T, s *harness.Serving, w *webSession, old int) int {
-	t.Helper()
-	editTitle(t, w, 1, "Edited in Calibre-Web "+random(t, 6, lower))
-	pid, err := waitNewPID(t.Context(), s.C, contentServer, old, reloadWithin)
+// calibre-server's new PID once PID 1 has restarted it to read the change:
+// PID 1 waits for 5 s with no change to the library after the 10 s in
+// which it tells whose change it was, and the wait allows a start's 60 s
+// in all.
+func reload(tb testing.TB, s *harness.Serving, w *webSession, old int) int {
+	tb.Helper()
+	editTitle(tb, w, 1, "Edited in Calibre-Web "+random(tb, 6, lower))
+	pid, err := waitNewPID(tb.Context(), s.C, contentServer, old)
 	if err != nil {
-		t.Fatalf("PID 1 never restarted calibre-server after an edit in Calibre-Web: %v", err)
+		tb.Fatalf("PID 1 never restarted calibre-server after an edit in Calibre-Web: %v", err)
 	}
 	return pid
 }
@@ -186,23 +207,24 @@ func reload(t *testing.T, s *harness.Serving, w *webSession, old int) int {
 func TestNoZombies(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	ctx := t.Context()
-	s, w := serveLibrary(t, e, image)
+	tb := redacting(t)
+	ctx := tb.Context()
+	s, w := serveLibrary(tb, e, image)
 	old, err := appPID(ctx, s.C, contentServer)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
-	kill(t, s.C, old)
-	crashed, err := waitNewPID(ctx, s.C, contentServer, old, startWithin)
+	kill(tb, s.C, old)
+	crashed, err := waitNewPID(ctx, s.C, contentServer, old)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
-	if err = waitHealth(ctx, s.C, true, startWithin); err != nil {
-		t.Fatal(err)
+	if err = waitHealthy(ctx, s.C); err != nil {
+		tb.Fatal(err)
 	}
-	reload(t, s, w, crashed)
-	if err = waitHealth(ctx, s.C, true, startWithin); err != nil {
-		t.Fatal(err)
+	reload(tb, s, w, crashed)
+	if err = waitHealthy(ctx, s.C); err != nil {
+		tb.Fatal(err)
 	}
 	var zombies []string
 	err = harness.Poll(ctx, zombieWithin, healthEvery, func(ctx context.Context) error {
@@ -221,7 +243,7 @@ func TestNoZombies(t *testing.T) {
 		}
 		return nil
 	})
-	harness.NewChecks(t).True("no process is a zombie after a crash and a planned reload", err == nil, fmt.Sprintf("zombies: %s: %v", none(zombies), err))
+	harness.NewChecks(tb).True("no process is a zombie after a crash and a planned reload", err == nil, fmt.Sprintf("zombies: %s: %v", none(zombies), err))
 }
 
 // TestNoStrayProcesses has PID 1 restart calibre-server, after an edit in
@@ -231,15 +253,16 @@ func TestNoZombies(t *testing.T) {
 func TestNoStrayProcesses(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	ctx := t.Context()
-	s, w := serveLibrary(t, e, image)
+	tb := redacting(t)
+	ctx := tb.Context()
+	s, w := serveLibrary(tb, e, image)
 	old, err := appPID(ctx, s.C, contentServer)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	ps, err := processes(ctx, s.C)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	var group []int
 	for i := range ps {
@@ -247,13 +270,13 @@ func TestNoStrayProcesses(t *testing.T) {
 			group = append(group, ps[i].PID)
 		}
 	}
-	checks := harness.NewChecks(t)
+	checks := harness.NewChecks(tb)
 	checks.True("before the reload, calibre-server's process group holds the server and its worker", len(group) >= 2, fmt.Sprint(group))
 
-	reload(t, s, w, old)
+	reload(tb, s, w, old)
 	ps, err = processes(ctx, s.C)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	var left []string
 	for i := range ps {

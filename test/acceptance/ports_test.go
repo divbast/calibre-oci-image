@@ -112,11 +112,12 @@ func where(ap netip.AddrPort) string {
 func TestNoOtherListeners(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	sec := newSecrets(t)
-	s := (&launch{env: sec.env(), mounts: append(newStore(t, e).mounts(), sec.mount()), passwords: sec.all()}).serve(t, e, image)
-	out, err := inPython(t.Context(), s.C, socketsCode)
+	tb := redacting(t)
+	sec := newSecrets(tb)
+	s := (&launch{env: sec.env(), mounts: append(newStore(tb, e).mounts(), sec.mount()), passwords: sec.all()}).serve(tb, e, image)
+	out, err := inPython(tb.Context(), s.C, socketsCode)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	var got struct {
 		Tables     map[string]string `json:"tables"`
@@ -124,14 +125,14 @@ func TestNoOtherListeners(t *testing.T) {
 		Unreadable []string          `json:"unreadable"`
 	}
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatalf("reading the socket tables: %v", err)
+		tb.Fatalf("reading the socket tables: %v", err)
 	}
 	ours := []uint16{appPort, webPort, serverLoopback, webLoopback}
 	var listening, strays, udp, engine []string
 	for _, name := range []string{"tcp", "tcp6", "udp", "udp6"} {
 		sockets, err := parseTable(got.Tables[name])
 		if err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 		for _, so := range sockets {
 			switch {
@@ -146,9 +147,9 @@ func TestNoOtherListeners(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("sockets in the tables that no process in the container holds: %s", none(engine))
+	tb.Logf("sockets in the tables that no process in the container holds: %s", none(engine))
 	slices.Sort(listening)
-	checks := harness.NewChecks(t)
+	checks := harness.NewChecks(tb)
 	harness.Equal(checks, "processes whose descriptors cannot be read", "none", none(got.Unreadable))
 	harness.Equal(checks, "the TCP listeners", "*:8080, *:8083, 127.0.0.1:18080, 127.0.0.1:18083", none(listening))
 	harness.Equal(checks, "TCP sockets that are no connection to or from those four ports", "none", none(strays))
@@ -169,16 +170,17 @@ print(urllib.request.urlopen("http://127.0.0.1:18083/reconnect", timeout=10).sta
 func TestReconnectNotPublic(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	sec := newSecrets(t)
-	s := (&launch{env: sec.env(), mounts: append(newStore(t, e).mounts(), sec.mount()), passwords: sec.all()}).serve(t, e, image)
+	tb := redacting(t)
+	sec := newSecrets(tb)
+	s := (&launch{env: sec.env(), mounts: append(newStore(tb, e).mounts(), sec.mount()), passwords: sec.all()}).serve(tb, e, image)
 	for _, path := range []string{"/reconnect", "//reconnect", "/reconnect?x=1", "/%72econnect"} {
-		harness.StatusIs(t, s.Health(), "8083: GET "+path+" answers 404", http.StatusNotFound, path)
+		harness.StatusIs(tb, s.Health(), "8083: GET "+path+" answers 404", http.StatusNotFound, path)
 	}
-	out, err := inPython(t.Context(), s.C, reconnectCode)
+	out, err := inPython(tb.Context(), s.C, reconnectCode)
 	if err != nil {
-		t.Fatalf("asking Calibre-Web's own /reconnect: %v", err)
+		tb.Fatalf("asking Calibre-Web's own /reconnect: %v", err)
 	}
-	harness.Equal(harness.NewChecks(t), "inside, Calibre-Web's own /reconnect answers 200 on 127.0.0.1:18083", "200", strings.TrimSpace(out))
+	harness.Equal(harness.NewChecks(tb), "inside, Calibre-Web's own /reconnect answers 200 on 127.0.0.1:18083", "200", strings.TrimSpace(out))
 }
 
 // TestOPDSAndKosync checks the feeds and the sync service that devices
@@ -188,33 +190,34 @@ func TestReconnectNotPublic(t *testing.T) {
 func TestOPDSAndKosync(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	ctx := t.Context()
-	sec := newSecrets(t)
-	s := (&launch{env: sec.env(), mounts: append(newStore(t, e).mounts(), sec.mount()), passwords: sec.all()}).serve(t, e, image)
-	checks := harness.NewChecks(t)
+	tb := redacting(t)
+	ctx := tb.Context()
+	sec := newSecrets(tb)
+	s := (&launch{env: sec.env(), mounts: append(newStore(tb, e).mounts(), sec.mount()), passwords: sec.all()}).serve(tb, e, image)
+	checks := harness.NewChecks(tb)
 	feed := func(what string, resp harness.Response, err error) {
-		harness.Answers(t, what, http.StatusOK, resp, err)
+		harness.Answers(tb, what, http.StatusOK, resp, err)
 		if err == nil {
 			checks.True(what+" with an Atom feed", bytes.Contains(resp.Body, []byte("<feed")), harness.Clip(string(resp.Body)))
 		}
 	}
 
 	resp, err := s.Get(ctx, "/opds", nil)
-	harness.Answers(t, "8080: /opds with no login answers 401", http.StatusUnauthorized, resp, err)
+	harness.Answers(tb, "8080: /opds with no login answers 401", http.StatusUnauthorized, resp, err)
 	resp, err = serverAdmin(ctx, s, sec.admin, "/opds")
 	feed("8080: /opds with admin's digest login answers 200", resp, err)
 
 	web := s.Health()
 	resp, err = web.Get(ctx, "/opds", nil)
-	harness.Answers(t, "8083: /opds with no login answers 401", http.StatusUnauthorized, resp, err)
+	harness.Answers(tb, "8083: /opds with no login answers 401", http.StatusUnauthorized, resp, err)
 	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte(admin+":"+sec.web))
 	resp, err = web.Get(ctx, "/opds", http.Header{"Authorization": {basic}})
 	feed("8083: /opds with admin's basic login answers 200", resp, err)
 
 	resp, err = s.Get(ctx, "/kosync/users/auth", nil)
-	harness.Answers(t, "8080: /kosync/users/auth with no login answers 401", http.StatusUnauthorized, resp, err)
+	harness.Answers(tb, "8080: /kosync/users/auth with no login answers 401", http.StatusUnauthorized, resp, err)
 	resp, err = s.Get(ctx, "/kosync/users/auth", http.Header{"X-Auth-User": {admin}, "X-Auth-Key": {md5Hex(sec.admin)}})
-	harness.Answers(t, "8080: /kosync/users/auth with admin's KOReader login answers 200", http.StatusOK, resp, err)
+	harness.Answers(tb, "8080: /kosync/users/auth with admin's KOReader login answers 200", http.StatusOK, resp, err)
 	if err == nil {
 		var got struct {
 			Authorized string `json:"authorized"`

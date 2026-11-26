@@ -52,7 +52,9 @@ var healthCmd = []string{binary, "health"}
 func TestContract(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	sec := newSecrets(t)
+	tb := redacting(t)
+	sec := newSecrets(tb)
+	var ran *harness.Container // the container the contract checks
 	contract.Run(t, &contract.Config{
 		Image:         image,
 		AppPort:       appPort,
@@ -76,7 +78,14 @@ func TestContract(t *testing.T) {
 			return append(newStore(tb, e).mounts(), sec.mount())
 		},
 		Ready: func(ctx context.Context, c *harness.Container) error {
-			return waitHealth(ctx, c, true, startWithin)
+			ran = c
+			return waitHealthy(ctx, c)
 		},
 	})
+	// Its container's log must hold neither password, as every other
+	// container's does
+	if ran == nil {
+		tb.Fatal("the contract never asked whether its container was ready")
+	}
+	checkLog(tb.Context(), tb, ran, sec.all())
 }

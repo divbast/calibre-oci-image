@@ -27,7 +27,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode"
 
 	"github.com/divbast/ci/harness"
 )
@@ -133,27 +132,29 @@ type secrets struct {
 	dir        string // the directory on the host
 }
 
-// newSecrets returns two new passwords that follow the rules.
-func newSecrets(t *testing.T) *secrets {
-	t.Helper()
-	return writeSecrets(t, password(t), password(t))
+// newSecrets returns two new passwords that follow the rules, which r
+// hides.
+func newSecrets(r *redactor) *secrets {
+	r.Helper()
+	return writeSecrets(r, password(r), password(r))
 }
 
 // writeSecrets writes the two passwords to their files, each with the
 // newline that an editor or echo leaves at the end, which the image takes
-// off.
-func writeSecrets(t *testing.T, adminPW, webPW string) *secrets {
-	t.Helper()
-	dir := secretDir(t)
+// off, and has r hide both.
+func writeSecrets(r *redactor, adminPW, webPW string) *secrets {
+	r.Helper()
+	r.hide(adminPW, webPW)
+	dir := secretDir(r)
 	for name, pw := range map[string]string{"admin": adminPW, "web": webPW} {
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, []byte(pw+"\n"), 0o600); err != nil {
-			t.Fatal(err)
+			r.Fatal(err)
 		}
 		// The bind mount keeps the file's mode, and the image's user,
 		// uid 65532, is not its owner
 		if err := os.Chmod(path, 0o644); err != nil { //nolint:gosec // G302: uid 65532 reads it, through a read-only bind mount
-			t.Fatal(err)
+			r.Fatal(err)
 		}
 	}
 	return &secrets{admin: adminPW, web: webPW, dir: dir}
@@ -163,24 +164,24 @@ func writeSecrets(t *testing.T, adminPW, webPW string) *secrets {
 // 65532 may enter, removed when the test ends. It is on /dev/shm, a tmpfs,
 // where the host is Linux, so that no password reaches a disk, and in the
 // test's temporary directory elsewhere.
-func secretDir(t *testing.T) string {
-	t.Helper()
+func secretDir(tb testing.TB) string {
+	tb.Helper()
 	dir := ""
 	if runtime.GOOS == "linux" {
 		if d, err := os.MkdirTemp("/dev/shm", "calibre-acceptance-"); err == nil {
 			dir = d
-			t.Cleanup(func() {
+			tb.Cleanup(func() {
 				if err := os.RemoveAll(d); err != nil {
-					t.Error(err)
+					tb.Error(err)
 				}
 			})
 		}
 	}
 	if dir == "" {
-		dir = t.TempDir()
+		dir = tb.TempDir()
 	}
 	if err := os.Chmod(dir, 0o755); err != nil { //nolint:gosec // G302: uid 65532 enters it, through a read-only bind mount
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	return dir
 }
@@ -213,10 +214,8 @@ func noPassword(c *harness.Checks, what, text string, passwords []string) {
 	empty := len(passwords) == 0
 	for _, pw := range passwords {
 		empty = empty || pw == ""
-		for _, part := range slices.Concat([]string{pw}, strings.FieldsFunc(pw, unicode.IsControl)) {
-			if part != "" {
-				found += strings.Count(text, part)
-			}
+		for _, p := range pieces(pw) {
+			found += strings.Count(text, p)
 		}
 	}
 	c.True(what+" holds no password", found == 0 && !empty, fmt.Sprintf("%d passwords, an empty one among them: %t; found %d times", len(passwords), empty, found))
@@ -258,9 +257,9 @@ var asRoot = harness.Confinement{User: "0:0", ReadOnly: true, NoNewPrivileges: t
 // rootPython runs code, a Python program, in image as root, on no
 // network, with mounts and with args as its sys.argv[1:], and returns what
 // it printed to stdout. Anything but exit 0 fails t.
-func rootPython(t *testing.T, e harness.Engine, image, code string, mounts []harness.Mount, args ...string) string {
-	t.Helper()
-	res, err := e.Run(t.Context(), t, &harness.RunSpec{
+func rootPython(tb testing.TB, e harness.Engine, image, code string, mounts []harness.Mount, args ...string) string {
+	tb.Helper()
+	res, err := e.Run(tb.Context(), tb, &harness.RunSpec{
 		Image:      image,
 		Network:    "none",
 		Confine:    asRoot,
@@ -269,7 +268,7 @@ func rootPython(t *testing.T, e harness.Engine, image, code string, mounts []har
 		Args:       slices.Concat([]string{"-I", "-c", code}, args),
 	})
 	if err != nil || res.Code != 0 {
-		t.Fatalf("running Python as root in %s: %v, exit status %d: %s", image, err, res.Code, harness.Clip(string(res.Stderr)))
+		tb.Fatalf("running Python as root in %s: %v, exit status %d: %s", image, err, res.Code, harness.Clip(string(res.Stderr)))
 	}
 	return string(res.Stdout)
 }
@@ -314,18 +313,18 @@ own("/books", int(sys.argv[1]))
 
 // library is a new books volume holding a Calibre library of one book,
 // made by the image's own calibredb, and owned by uid.
-func library(t *testing.T, e harness.Engine, image string, uid int) harness.Mount {
-	t.Helper()
-	books := volume(t, e, booksDir)
-	rootPython(t, e, image, libraryCode, []harness.Mount{books}, strconv.Itoa(uid), fixtureTitle, fixtureAuthor)
+func library(tb testing.TB, e harness.Engine, image string, uid int) harness.Mount {
+	tb.Helper()
+	books := volume(tb, e, booksDir)
+	rootPython(tb, e, image, libraryCode, []harness.Mount{books}, strconv.Itoa(uid), fixtureTitle, fixtureAuthor)
 	return books
 }
 
 // own gives m's directory, and everything in it, to uid, as an operator
 // does with chown -R.
-func own(t *testing.T, e harness.Engine, image string, m harness.Mount, uid int) {
-	t.Helper()
-	rootPython(t, e, image, ownCode, []harness.Mount{m}, m.Target, strconv.Itoa(uid))
+func own(tb testing.TB, e harness.Engine, image string, m harness.Mount, uid int) {
+	tb.Helper()
+	rootPython(tb, e, image, ownCode, []harness.Mount{m}, m.Target, strconv.Itoa(uid))
 }
 
 // listCode is Python that prints every path under each directory sys.argv
@@ -339,10 +338,10 @@ for top in sys.argv[1:]:
 
 // nothingWritten checks that st's volumes hold nothing, as the engine
 // first made them.
-func nothingWritten(t *testing.T, e harness.Engine, image string, st *store) {
-	t.Helper()
-	out := rootPython(t, e, image, listCode, st.mounts(), booksDir, configDir)
-	harness.Equal(harness.NewChecks(t), "nothing is written to /books or /config", "", strings.TrimSpace(out))
+func nothingWritten(tb testing.TB, e harness.Engine, image string, st *store) {
+	tb.Helper()
+	out := rootPython(tb, e, image, listCode, st.mounts(), booksDir, configDir)
+	harness.Equal(harness.NewChecks(tb), "nothing is written to /books or /config", "", strings.TrimSpace(out))
 }
 
 // launch is one container of the image, under the contract.
@@ -374,36 +373,42 @@ func (l *launch) spec(e harness.Engine, image string) harness.RunSpec {
 // answer. 8083 is the ServeSpec's health port, the second port Serve
 // publishes, so the Serving's Health copy sends to Calibre-Web. When the
 // test ends, its log must hold none of l's passwords.
-func (l *launch) serve(t *testing.T, e harness.Engine, image string) *harness.Serving {
-	t.Helper()
-	ctx := t.Context()
+func (l *launch) serve(tb testing.TB, e harness.Engine, image string) *harness.Serving {
+	tb.Helper()
+	ctx := tb.Context()
 	spec := l.spec(e, image)
-	s, err := e.Serve(ctx, t, &harness.ServeSpec{Run: spec, AppPort: appPort, HealthPort: webPort})
+	s, err := e.Serve(ctx, tb, &harness.ServeSpec{Run: spec, AppPort: appPort, HealthPort: webPort})
 	if err != nil {
-		t.Fatalf("serving %s: %v", image, err)
+		tb.Fatalf("serving %s: %v", image, err)
 	}
-	watchLog(t, s.C, l.passwords)
-	if err := waitHealth(ctx, s.C, true, startWithin); err != nil {
-		t.Fatalf("the shipped probe never passed: %v", harness.WithLog(ctx, s.C, err))
+	watchLog(tb, s.C, l.passwords)
+	if err := waitHealthy(ctx, s.C); err != nil {
+		tb.Fatalf("the shipped probe never passed: %v", harness.WithLog(ctx, s.C, err))
 	}
 	return s
 }
 
 // watchLog checks, when the test ends, that c's log holds none of
 // passwords.
-func watchLog(t *testing.T, c *harness.Container, passwords []string) {
-	t.Helper()
+func watchLog(tb testing.TB, c *harness.Container, passwords []string) {
+	tb.Helper()
 	pws := slices.Clone(passwords)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), cleanupWithin)
+	tb.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(tb.Context()), cleanupWithin)
 		defer cancel()
-		logs, err := c.Logs(ctx)
-		if err != nil {
-			t.Errorf("reading the log of %s: %v", c, err)
-			return
-		}
-		noPassword(harness.NewChecks(t), "the log of "+c.String(), logs, pws)
+		checkLog(ctx, tb, c, pws)
 	})
+}
+
+// checkLog checks that c's log holds none of passwords.
+func checkLog(ctx context.Context, tb testing.TB, c *harness.Container, passwords []string) {
+	tb.Helper()
+	logs, err := c.Logs(ctx)
+	if err != nil {
+		tb.Errorf("reading the log of %s: %v", c, err)
+		return
+	}
+	noPassword(harness.NewChecks(tb), "the log of "+c.String(), logs, passwords)
 }
 
 // refusal is how a start that must fail ended.
@@ -415,17 +420,17 @@ type refusal struct {
 
 // refuse runs l in the foreground, on no network, and returns how it
 // ended. One that runs past refuseWithin fails t.
-func (l *launch) refuse(t *testing.T, e harness.Engine, image string) refusal {
-	t.Helper()
+func (l *launch) refuse(tb testing.TB, e harness.Engine, image string) refusal {
+	tb.Helper()
 	spec := l.spec(e, image)
 	spec.Network, spec.HealthCmd, spec.Extra = "none", nil, nil
-	ctx, cancel := context.WithTimeout(t.Context(), refuseWithin)
+	ctx, cancel := context.WithTimeout(tb.Context(), refuseWithin)
 	defer cancel()
 	start := time.Now()
-	res, err := e.Run(ctx, t, &spec)
+	res, err := e.Run(ctx, tb, &spec)
 	took := time.Since(start)
 	if err != nil {
-		t.Fatalf("the start of %s did not end within %s: %v", image, refuseWithin, err)
+		tb.Fatalf("the start of %s did not end within %s: %v", image, refuseWithin, err)
 	}
 	return refusal{code: res.Code, stdout: string(res.Stdout), stderr: string(res.Stderr), took: took}
 }
@@ -438,15 +443,15 @@ func lines(text string) []string {
 // refused checks that r exited 1 within refuseWithin, that its stderr is
 // one line holding each of needles, and that nothing it printed holds one
 // of passwords.
-func refused(t *testing.T, r refusal, passwords []string, needles ...string) {
-	t.Helper()
-	checks := harness.NewChecks(t)
+func refused(tb testing.TB, r refusal, passwords []string, needles ...string) {
+	tb.Helper()
+	checks := harness.NewChecks(tb)
 	harness.Equal(checks, "the start exits 1", 1, r.code)
 	checks.True("the start ends within "+refuseWithin.String(), r.took < refuseWithin, r.took.String())
 	got := lines(r.stderr)
 	checks.True("the start prints one line to stderr", len(got) == 1, harness.Clip(r.stderr))
 	for _, n := range needles {
-		harness.Contains(t, "the line says '"+n+"'", n, r.stderr)
+		harness.Contains(tb, "the line says '"+n+"'", n, r.stderr)
 	}
 	noPassword(checks, "what the start printed", r.stdout+r.stderr, passwords)
 }
@@ -534,11 +539,11 @@ func appPID(ctx context.Context, c *harness.Container, app string) (int, error) 
 	return pids[0], nil
 }
 
-// waitNewPID waits until app in c runs as a PID other than old, and
-// returns it.
-func waitNewPID(ctx context.Context, c *harness.Container, app string, old int, within time.Duration) (int, error) {
+// waitNewPID waits until app in c runs as a PID other than old, for as
+// long as a start may take, and returns it.
+func waitNewPID(ctx context.Context, c *harness.Container, app string, old int) (int, error) {
 	pid := 0
-	err := harness.Poll(ctx, within, healthEvery, func(ctx context.Context) error {
+	err := harness.Poll(ctx, startWithin, healthEvery, func(ctx context.Context) error {
 		got, err := appPID(ctx, c, app)
 		switch {
 		case err != nil:
@@ -579,10 +584,10 @@ os.kill(int(sys.argv[1]), signal.SIGKILL)
 `
 
 // kill sends SIGKILL to the process pid in c, as a crash ends it.
-func kill(t *testing.T, c *harness.Container, pid int) {
-	t.Helper()
-	if _, err := inPython(t.Context(), c, killCode, strconv.Itoa(pid)); err != nil {
-		t.Fatalf("SIGKILL to PID %d: %v", pid, err)
+func kill(tb testing.TB, c *harness.Container, pid int) {
+	tb.Helper()
+	if _, err := inPython(tb.Context(), c, killCode, strconv.Itoa(pid)); err != nil {
+		tb.Fatalf("SIGKILL to PID %d: %v", pid, err)
 	}
 }
 
@@ -598,6 +603,26 @@ func isFile(ctx context.Context, c *harness.Container, path string) (bool, error
 	return strings.TrimSpace(out) == "True", err
 }
 
+// appState is one app's entry in PID 1's state file: whether it is up,
+// and since when.
+type appState struct {
+	Up    bool      `json:"up"`
+	Since time.Time `json:"since"`
+}
+
+// appStates reads PID 1's state file in c.
+func appStates(ctx context.Context, c *harness.Container) (map[string]appState, error) {
+	out, err := inPython(ctx, c, "import sys; sys.stdout.write(open(sys.argv[1]).read())", statePath)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", statePath, err)
+	}
+	var states map[string]appState
+	if err := json.Unmarshal([]byte(out), &states); err != nil {
+		return nil, fmt.Errorf("reading %s: %w: %s", statePath, err, harness.Clip(out))
+	}
+	return states, nil
+}
+
 // probeHealth runs the shipped probe in c, and returns its exit status and
 // what it printed.
 func probeHealth(ctx context.Context, c *harness.Container) (code int, out string, err error) {
@@ -608,16 +633,15 @@ func probeHealth(ctx context.Context, c *harness.Container) (code int, out strin
 	return res.Code, strings.TrimSpace(string(res.Stdout) + string(res.Stderr)), nil
 }
 
-// waitHealth runs the shipped probe in c every healthEvery, until it
-// passes, exit 0 printing nothing, when healthy is true, or until it
-// fails, when healthy is false, for up to within.
-func waitHealth(ctx context.Context, c *harness.Container, healthy bool, within time.Duration) error {
-	return harness.Poll(ctx, within, healthEvery, func(ctx context.Context) error {
+// waitHealthy runs the shipped probe in c every healthEvery until it
+// passes, exit 0 printing nothing, for as long as a start may take.
+func waitHealthy(ctx context.Context, c *harness.Container) error {
+	return harness.Poll(ctx, startWithin, healthEvery, func(ctx context.Context) error {
 		code, out, err := probeHealth(ctx, c)
 		switch {
 		case err != nil:
 			return harness.NotYet(err)
-		case (code == 0 && out == "") == healthy:
+		case code == 0 && out == "":
 			return nil
 		}
 		return harness.NotYet(fmt.Errorf("the probe exits %d, printing %s", code, harness.Clip(out)))
@@ -643,17 +667,17 @@ func waitLog(ctx context.Context, c *harness.Container, re *regexp.Regexp, withi
 
 // stop stops c as a user does, with <engine> stop -t 10, and returns how
 // long the stop took, and the container's exit status.
-func stop(t *testing.T, e harness.Engine, c *harness.Container) (took time.Duration, code int) {
-	t.Helper()
+func stop(tb testing.TB, e harness.Engine, c *harness.Container) (took time.Duration, code int) {
+	tb.Helper()
 	start := time.Now()
-	out, err := exec.CommandContext(t.Context(), e.Name(), "stop", "-t", "10", c.ID).CombinedOutput() //nolint:gosec // G204: the engine and the container are the harness's own
+	out, err := exec.CommandContext(tb.Context(), e.Name(), "stop", "-t", "10", c.ID).CombinedOutput() //nolint:gosec // G204: the engine and the container are the harness's own
 	took = time.Since(start)
 	if err != nil {
-		t.Fatalf("%s stop %s: %v: %s", e.Name(), c, err, out)
+		tb.Fatalf("%s stop %s: %v: %s", e.Name(), c, err, out)
 	}
-	code, err = c.WaitExit(t.Context(), time.Second)
+	code, err = c.WaitExit(tb.Context(), time.Second)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	return took, code
 }
@@ -791,27 +815,27 @@ func (w *webSession) login(ctx context.Context, user, pw string, header http.Hea
 
 // loginAdmin logs a new session in as admin with pw, and fails t unless
 // the login works.
-func loginAdmin(t *testing.T, s *harness.Serving, pw string) *webSession {
-	t.Helper()
-	w := newWebSession(t, s)
-	resp, err := w.login(t.Context(), admin, pw, nil)
+func loginAdmin(tb testing.TB, s *harness.Serving, pw string) *webSession {
+	tb.Helper()
+	w := newWebSession(tb, s)
+	resp, err := w.login(tb.Context(), admin, pw, nil)
 	if err != nil || resp.Status != http.StatusFound {
-		t.Fatalf("Calibre-Web's admin login: %v, status %d: %s", err, resp.Status, harness.Clip(string(resp.Body)))
+		tb.Fatalf("Calibre-Web's admin login: %v, status %d: %s", err, resp.Status, harness.Clip(string(resp.Body)))
 	}
 	return w
 }
 
 // editTitle sets the title of book id through Calibre-Web, as its book
 // list's own edit does, which writes the library's metadata.db.
-func editTitle(t *testing.T, w *webSession, id int, title string) {
-	t.Helper()
-	ctx := t.Context()
+func editTitle(tb testing.TB, w *webSession, id int, title string) {
+	tb.Helper()
+	ctx := tb.Context()
 	if _, err := w.get(ctx, "/", nil); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	resp, err := w.postJSON(ctx, "/ajax/editbooks/title", map[string]any{"pk": []int{id}, "value": title})
 	if err != nil || resp.Status != http.StatusOK || !bytes.Contains(resp.Body, []byte(`"success":true`)) {
-		t.Fatalf("editing book %d's title in Calibre-Web: %v, status %d: %s", id, err, resp.Status, harness.Clip(string(resp.Body)))
+		tb.Fatalf("editing book %d's title in Calibre-Web: %v, status %d: %s", id, err, resp.Status, harness.Clip(string(resp.Body)))
 	}
 }
 
