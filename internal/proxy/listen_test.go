@@ -40,7 +40,7 @@ func TestListenDualStack(t *testing.T) {
 	if !hasIPv6() {
 		t.Skip("this machine has no IPv6")
 	}
-	l, err := Listen(0)
+	l, err := Listen(t.Context(), 0)
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestListenDualStack(t *testing.T) {
 
 func TestListenWithoutIPv6(t *testing.T) {
 	t.Parallel()
-	l, err := listenOn(0, false)
+	l, err := listenOn(t.Context(), 0, false)
 	if err != nil {
 		t.Fatalf("listenOn: %v", err)
 	}

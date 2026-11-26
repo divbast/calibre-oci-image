@@ -77,7 +77,7 @@ func do(h http.Handler, peer, method, target string, hdr http.Header) *httptest.
 func TestHeadersUntrusted(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)
-	h := New(Config{Target: b.target(), Trusted: trustedNet})
+	h := New(&Config{Target: b.target(), Trusted: trustedNet})
 	forged := http.Header{
 		"X-Forwarded-For":   {"203.0.113.9"},
 		"X-Forwarded-Proto": {"https"},
@@ -116,7 +116,7 @@ func TestLoginHeaderUntrusted(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)
 	lh, _ := loaded(t, "X-User")
-	h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
+	h := New(&Config{Target: b.target(), Trusted: trustedNet, Login: lh})
 	hdr := http.Header{"X-User": {"admin"}, "X_User": {"admin"}, "X-Other": {"1"}}
 	do(h, untrustedPeer, "GET", "http://calibre.test/", hdr)
 	got := b.got()
@@ -134,7 +134,7 @@ func TestHeadersTrusted(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)
 	lh, _ := loaded(t, "X-User")
-	h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
+	h := New(&Config{Target: b.target(), Trusted: trustedNet, Login: lh})
 	hdr := http.Header{
 		"X-Forwarded-For":   {"203.0.113.5"},
 		"X-Forwarded-Proto": {"https"},
@@ -172,7 +172,7 @@ func TestLoginHeaderAlwaysStripped(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)
 	lh, _ := loaded(t, "X-User")
-	h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh, StripLoginAlways: true})
+	h := New(&Config{Target: b.target(), Trusted: trustedNet, Login: lh, StripLoginAlways: true})
 	hdr := http.Header{"X-User": {"admin"}, "X-Forwarded-Proto": {"https"}, "X-Forwarded-For": {"203.0.113.5"}}
 	do(h, trustedPeer, "GET", "http://calibre.test/", hdr)
 	got := b.got()
@@ -194,7 +194,7 @@ func TestHostIsKept(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { host = r.Host }))
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
-	do(New(Config{Target: u}), untrustedPeer, "GET", "http://books.example/x", nil)
+	do(New(&Config{Target: u}), untrustedPeer, "GET", "http://books.example/x", nil)
 	if host != "books.example" {
 		t.Fatalf("upstream saw Host %q", host)
 	}
@@ -203,7 +203,7 @@ func TestHostIsKept(t *testing.T) {
 func TestReconnectBlocked(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)
-	blocked := New(Config{Target: b.target(), BlockReconnect: true})
+	blocked := New(&Config{Target: b.target(), BlockReconnect: true})
 	for _, target := range []string{"/reconnect", "/reconnect?x=1", "/reconnect?"} {
 		for _, m := range []string{"GET", "POST"} {
 			if w := do(blocked, untrustedPeer, m, "http://calibre.test"+target, nil); w.Code != 404 {
@@ -219,7 +219,7 @@ func TestReconnectBlocked(t *testing.T) {
 			t.Errorf("GET %s = %d, want 200", target, w.Code)
 		}
 	}
-	open := New(Config{Target: b.target()})
+	open := New(&Config{Target: b.target()})
 	if w := do(open, untrustedPeer, "GET", "http://calibre.test/reconnect", nil); w.Code != 200 {
 		t.Errorf("without BlockReconnect, /reconnect = %d", w.Code)
 	}
@@ -231,7 +231,7 @@ func TestGate(t *testing.T) {
 	var started atomic.Int32
 	var deny atomic.Bool
 	deny.Store(true)
-	h := New(Config{Target: b.target(), Hooks: Hooks{
+	h := New(&Config{Target: b.target(), Hooks: Hooks{
 		Gate: func(*http.Request) (bool, time.Duration, string) {
 			return deny.Load(), 10 * time.Second, "a reload is pending"
 		},
@@ -255,7 +255,7 @@ func TestGate(t *testing.T) {
 func TestGateRoundsRetryAfterUp(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)
-	h := New(Config{Target: b.target(), Hooks: Hooks{
+	h := New(&Config{Target: b.target(), Hooks: Hooks{
 		Gate: func(*http.Request) (bool, time.Duration, string) { return true, 1500 * time.Millisecond, "wait" },
 	}})
 	if got := do(h, untrustedPeer, "GET", "http://calibre.test/", nil).Header().Get("Retry-After"); got != "2" {
@@ -272,7 +272,7 @@ func TestStartedDone(t *testing.T) {
 	u, _ := url.Parse(srv.URL)
 	var statuses []int
 	var calls int
-	h := New(Config{Target: u, Hooks: Hooks{Started: func(*http.Request) func(int) {
+	h := New(&Config{Target: u, Hooks: Hooks{Started: func(*http.Request) func(int) {
 		calls++
 		return func(s int) { statuses = append(statuses, s) }
 	}}})
@@ -331,7 +331,7 @@ func TestStreams(t *testing.T) {
 	}))
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
-	front := httptest.NewServer(New(Config{Target: u}))
+	front := httptest.NewServer(New(&Config{Target: u}))
 	defer front.Close()
 
 	measure := func(t *testing.T, run func() int64) {
@@ -393,7 +393,7 @@ func TestRoutedPath(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)
 	var seenGate, seenStarted []string
-	h := New(Config{Target: b.target(), Trusted: trustedNet, BlockReconnect: true, Hooks: Hooks{
+	h := New(&Config{Target: b.target(), Trusted: trustedNet, BlockReconnect: true, Hooks: Hooks{
 		Gate: func(r *http.Request) (bool, time.Duration, string) {
 			seenGate = append(seenGate, r.URL.Path)
 			return false, 0, ""
@@ -427,7 +427,7 @@ func TestRoutedPath(t *testing.T) {
 func TestRoutedPathLikeCalibreWeb(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)
-	h := New(Config{Target: b.target(), Trusted: trustedNet, BlockReconnect: true})
+	h := New(&Config{Target: b.target(), Trusted: trustedNet, BlockReconnect: true})
 	tests := []struct {
 		name    string
 		peer    string

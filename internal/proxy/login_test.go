@@ -175,7 +175,7 @@ func TestLoginHeaderHold(t *testing.T) {
 	defer release() // so a failing test does not leave srv.Close waiting
 	b := &backend{srv: srv}
 	lh, rd := loaded(t, "X-User")
-	h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
+	h := New(&Config{Target: b.target(), Trusted: trustedNet, Login: lh})
 
 	postDone := make(chan struct{})
 	go func() {
@@ -225,7 +225,7 @@ func TestLoginHeaderGetDoesNotHold(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)
 	lh, rd := loaded(t, "X-User")
-	h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
+	h := New(&Config{Target: b.target(), Trusted: trustedNet, Login: lh})
 	for _, c := range []struct{ method, path string }{
 		{"GET", "/admin/config"},
 		{"GET", "/admin/ajaxconfig"},
@@ -250,7 +250,7 @@ func TestLoginHeaderFailClosed(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)
 	lh, rd := loaded(t, "X-User")
-	h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
+	h := New(&Config{Target: b.target(), Trusted: trustedNet, Login: lh})
 	rd.set("", errors.New("the helper failed"), nil)
 	do(h, trustedPeer, "POST", "http://calibre.test/admin/ajaxconfig", nil)
 	hits := b.hits.Load()
@@ -270,7 +270,7 @@ func TestLoginHeaderRetryOncePerSecond(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)
 	lh, rd, clk := loadedWithClock(t, "X-User")
-	h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
+	h := New(&Config{Target: b.target(), Trusted: trustedNet, Login: lh})
 	get := func() int {
 		return do(h, untrustedPeer, "GET", "http://calibre.test/", http.Header{"X-New": {"forged"}}).Code
 	}
@@ -307,7 +307,7 @@ func TestLoginHeaderTrustedUnaffected(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)
 	lh, rd, clk := loadedWithClock(t, "X-User")
-	h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
+	h := New(&Config{Target: b.target(), Trusted: trustedNet, Login: lh})
 	rd.set("", errors.New("the helper failed"), nil)
 	do(h, trustedPeer, "POST", "http://calibre.test/admin/ajaxconfig", nil)
 
@@ -345,7 +345,7 @@ func TestLoginHeaderHoldBehindScriptName(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)
 	lh, rd := loaded(t, "X-User")
-	h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
+	h := New(&Config{Target: b.target(), Trusted: trustedNet, Login: lh})
 	hdr := http.Header{"X-Script-Name": {"/x"}}
 	do(h, trustedPeer, "POST", "http://calibre.test/x/admin/ajaxconfig", hdr)
 	do(h, untrustedPeer, "GET", "http://calibre.test/", nil) // waits for the re-read
@@ -378,7 +378,7 @@ func TestLoginHeaderHoldRoutedLikeCalibreWeb(t *testing.T) {
 			t.Parallel()
 			b := newBackend(t)
 			lh, rd := loaded(t, "X-User")
-			h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
+			h := New(&Config{Target: b.target(), Trusted: trustedNet, Login: lh})
 			hdr := http.Header{}
 			if tt.script != "" {
 				hdr["X-Script-Name"] = []string{tt.script}

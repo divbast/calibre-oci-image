@@ -4,6 +4,10 @@
 package proxy
 
 import (
+	"context"
+	"errors"
+	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/http/httputil"
@@ -40,7 +44,25 @@ type Hooks struct {
 	// the request failed, with the status the app gave, or 502 when it
 	// gave none.
 	Started func(*http.Request) (done func(status int))
+
+	// Observe, when it is set, runs when a request goes on, after Started.
+	// When it returns a function, the proxy keeps a copy of the first
+	// ObserveLimit bytes of the app's response body as they stream to the
+	// client, and calls that function once, when the response is over: with
+	// the status the app gave, or 502 when it gave none, the app's response
+	// header, the copy, and whether the copy holds the whole body. The
+	// client's copy is never held back for it.
+	Observe func(*http.Request) (seen func(status int, header http.Header, body []byte, whole bool))
+
+	// Failed runs once for a request the app did not answer, or whose
+	// answer broke off, with the error. It does not run when the client
+	// went away first.
+	Failed func(*http.Request, error)
 }
+
+// ObserveLimit is how much of a response body the proxy keeps for
+// Hooks.Observe.
+const ObserveLimit = 64 << 10
 
 // Config says how one public port proxies to its app.
 type Config struct {
@@ -65,17 +87,84 @@ type handler struct {
 	rp *httputil.ReverseProxy
 }
 
-// New returns the handler of one public port.
-func New(c Config) http.Handler {
-	h := &handler{c: c}
+// New returns the handler of one public port, as c says.
+func New(c *Config) http.Handler {
+	h := &handler{c: *c}
 	h.rp = &httputil.ReverseProxy{
-		Rewrite:       h.rewrite,
-		FlushInterval: -1, // bodies stream through, in both directions
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+		Rewrite:        h.rewrite,
+		ModifyResponse: watchBody,
+		FlushInterval:  -1, // bodies stream through, in both directions
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			exchangeOf(r).fail(err)
 			w.WriteHeader(http.StatusBadGateway)
 		},
+		// Hooks.Failed reports the one error the proxy would log, a body
+		// that broke off, with the request it belongs to
+		ErrorLog: log.New(io.Discard, "", 0),
 	}
 	return h
+}
+
+// exchange is what the proxy learns of the app's answer to one request.
+// Only the goroutine serving the request touches it.
+type exchange struct {
+	keep   bool        // keep a copy of the body, for Observe
+	header http.Header // the app's response header
+	body   []byte      // the copy
+	over   bool        // the body was longer than the copy
+	eof    bool        // the body was read to its end
+	err    error       // why the app's answer failed
+}
+
+type exchangeKey struct{}
+
+// exchangeOf returns the exchange of the request r is, or was cloned
+// from, or nil.
+func exchangeOf(r *http.Request) *exchange {
+	x, _ := r.Context().Value(exchangeKey{}).(*exchange)
+	return x
+}
+
+func (x *exchange) fail(err error) {
+	if x != nil && x.err == nil {
+		x.err = err
+	}
+}
+
+// watchBody has the proxy read the app's response body through a
+// bodyWatch, except for a protocol switch, whose body is the connection.
+func watchBody(res *http.Response) error {
+	x := exchangeOf(res.Request)
+	if x == nil || res.StatusCode == http.StatusSwitchingProtocols {
+		return nil
+	}
+	x.header = res.Header
+	res.Body = &bodyWatch{ReadCloser: res.Body, x: x}
+	return nil
+}
+
+// bodyWatch notes how reading a response body went, and keeps a copy of
+// its start when asked to, after the proxy has read each part and before
+// it writes it to the client.
+type bodyWatch struct {
+	io.ReadCloser
+	x *exchange
+}
+
+func (b *bodyWatch) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if x := b.x; x.keep && n > 0 {
+		room := ObserveLimit - len(x.body)
+		x.body = append(x.body, p[:min(n, room)]...)
+		x.over = x.over || n > room
+	}
+	switch {
+	case errors.Is(err, io.EOF):
+		b.x.eof = true
+	case err != nil:
+		b.x.fail(err)
+	}
+	return n, err
 }
 
 // managed reports whether this port waits for the login header's name: it
@@ -111,18 +200,33 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer h.c.Login.end()
 	}
 	sw := &statusWriter{ResponseWriter: w}
+	x := &exchange{}
+	var done func(status int)
 	if started := h.c.Hooks.Started; started != nil {
-		if done := started(seen); done != nil {
-			defer func() {
-				status := sw.status
-				if status == 0 {
-					status = http.StatusBadGateway
-				}
-				done(status)
-			}()
-		}
+		done = started(seen)
 	}
-	h.rp.ServeHTTP(sw, r)
+	var observed func(int, http.Header, []byte, bool)
+	if observe := h.c.Hooks.Observe; observe != nil {
+		observed = observe(seen)
+		x.keep = observed != nil
+	}
+	// Deferred, so it runs too when the proxy aborts a response that broke off
+	defer func() {
+		status := sw.status
+		if status == 0 {
+			status = http.StatusBadGateway
+		}
+		if observed != nil {
+			observed(status, x.header, x.body, x.eof && !x.over && x.err == nil)
+		}
+		if done != nil {
+			done(status)
+		}
+		if failed := h.c.Hooks.Failed; failed != nil && x.err != nil && r.Context().Err() == nil {
+			failed(seen, x.err)
+		}
+	}()
+	h.rp.ServeHTTP(sw, r.WithContext(context.WithValue(r.Context(), exchangeKey{}, x)))
 }
 
 // routedPath returns the path Calibre-Web routes. It starts from the decoded
