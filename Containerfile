@@ -244,12 +244,14 @@ RUN apt-get update; \
 # sha256, then to its signature, by Kovid Goyal's release key in
 # keys/calibre-release.asc. That file must hold that one key and nothing
 # else, whose fingerprint the build checks, so a signature by any other key
-# fails. Then the list of what Calibre's build compiled into the bundle,
-# bypy/sources.json, for the SBOM: from Calibre's tag for this version,
-# whose signature git checks against the same key, alone in the keyring.
-# Only the tag's objects are fetched, and the one file, which git checks
-# against the tagged commit. Each fetch gets three retries, 10s, 30s and
-# 90s apart, so one dropped connection does not cost the daily slot.
+# fails. Then the lists of what Calibre's build put into the bundle, for
+# the SBOM: bypy/sources.json, the libraries it compiled, and
+# pyproject.toml, the Python packages it froze, each pinned with ==: from
+# Calibre's tag for this version, whose signature git checks against the
+# same key, alone in the keyring. Only the tag's objects are fetched, and
+# the two files, which git checks against the tagged commit. Each fetch
+# gets three retries, 10s, 30s and 90s apart, so one dropped connection
+# does not cost the daily slot.
 FROM toolchain AS calibre
 ARG TARGETARCH
 ARG CALIBRE_VERSION
@@ -303,6 +305,7 @@ RUN retry() { \
         exit 1; \
     fi; \
     retry git -C /tmp/src show "${tag}:bypy/sources.json" >/sources.json; \
+    retry git -C /tmp/src show "${tag}:pyproject.toml" >/pyproject.toml; \
     gpgconf --kill gpg-agent; \
     rm -rf /tmp/src "${GNUPGHOME}" /tmp/calibre-release.* /tmp/gpgv /tmp/tagsig
 
@@ -576,15 +579,15 @@ RUN tar -xzf /tmp/unrar.tar.gz -C /tmp \
 
 # The SBOMs of what no scanner sees in the image, each component by the
 # identifier the scan matches it by, which ci's divbast-scan reads through
-# the labels below: the libraries Calibre's bundle carries, from its
-# sources.json, which the scan reports and never blocks on, since DHI's
-# updates never reach them; and the four tools built here, with the
-# jbig2dec inside Ghostscript.
+# the labels below: the libraries and Python packages Calibre's bundle
+# carries, from its sources.json and pyproject.toml, which the scan reports
+# and never blocks on, since DHI's updates never reach them; and the four
+# tools built here, with the jbig2dec inside Ghostscript.
 FROM toolchain AS sbom
 ARG IMAGEMAGICK_VERSION
 ARG GHOSTSCRIPT_VERSION
 ARG KEPUBIFY_VERSION
-COPY --from=calibre /sources.json /tmp/sources.json
+COPY --from=calibre /sources.json /pyproject.toml /tmp/
 COPY --from=unrar /out/unrar.version /tmp/unrar.version
 COPY --from=ghostscript /out/jbig2dec.version /tmp/jbig2dec.version
 COPY sbom/sboms.py /tmp/sboms.py
@@ -594,6 +597,7 @@ RUN read -r major minor beta </tmp/unrar.version \
     && install -d /out \
     && python3 -I /tmp/sboms.py \
         --sources /tmp/sources.json \
+        --pyproject /tmp/pyproject.toml \
         --unrar "${major}.${minor}" --unrar-beta "${beta}" \
         --imagemagick "${IMAGEMAGICK_VERSION}" \
         --ghostscript "${GHOSTSCRIPT_VERSION}" \
@@ -789,19 +793,21 @@ ENV LC_ALL=C.UTF-8 \
     CACHE_DIRECTORY=/config/calibre-web/cache \
     MAGICK_HOME=/opt/imagemagick
 
-# The licences of everything the image ships beyond its base and DHI's
-# packages, whose own are in /usr/share/doc: this repository's, Calibre's
-# and the libraries its bundle carries, Calibre-Web's, each Python
-# package's, Ghostscript's, ImageMagick's, kepubify's and its Go modules',
-# and unrar's. Which file carries which is in each package's dist-info, in
-# the bundle's SBOM, and in /usr/local/share/doc for the tools. The SBOM
-# labels are what ci's scan reads: it reports the bundle's findings, and
-# blocks on none of them.
+# The licences of everything the image ships beyond its base: this
+# repository's, Calibre's and the libraries and Python packages its bundle
+# carries, Calibre-Web's, each Python package's, Ghostscript's,
+# ImageMagick's, kepubify's and its Go modules', unrar's, and every
+# licence the copyright file of each DHI package the image adds names,
+# with a LicenseRef- where SPDX has no name for one. Which file carries
+# which is in each package's dist-info, in the bundle's SBOM, in
+# /usr/share/doc/<package>/copyright, and in /usr/local/share/doc for the
+# tools. The SBOM labels are what ci's scan reads: it reports the bundle's
+# findings, and blocks on none of them.
 LABEL org.opencontainers.image.source="https://github.com/divbast/calibre-oci-image" \
     org.opencontainers.image.url="https://github.com/divbast/calibre-oci-image" \
     org.opencontainers.image.title="Calibre and Calibre-Web" \
     org.opencontainers.image.version="${CALIBRE_VERSION}" \
-    org.opencontainers.image.licenses="GPL-3.0-only AND 0BSD AND AGPL-3.0-or-later AND Apache-2.0 AND blessing AND BSD-2-Clause AND BSD-3-Clause AND bzip2-1.0.6 AND CNRI-Python AND GPL-2.0-or-later AND GPL-3.0-or-later AND IJG AND ImageMagick AND ISC AND LGPL-2.0-or-later AND LGPL-2.1-only AND LGPL-2.1-or-later AND LGPL-3.0-only AND libpng-2.0 AND libtiff AND LicenseRef-Public-Domain AND LicenseRef-UnRAR AND MIT AND MIT-0 AND MIT-CMU AND MPL-2.0 AND OFL-1.1 AND PSF-2.0 AND python-ldap AND Unicode-3.0 AND Unlicense AND X11-distribute-modifications-variant AND Zlib AND ZPL-2.1 AND (0BSD OR CC0-1.0) AND (AFL-2.1 OR GPL-2.0-or-later) AND (Apache-2.0 OR BSD-2-Clause) AND (Apache-2.0 OR BSD-3-Clause) AND (Apache-2.0 OR MIT) AND (BSD-2-Clause OR GPL-2.0-or-later) AND (BSD-3-Clause OR GPL-2.0-only) AND (GPL-2.0-only OR GPL-3.0-only) AND (GPL-2.0-or-later OR LGPL-2.1-or-later OR MPL-1.1) AND (GPL-2.0-or-later OR LGPL-2.1-or-later OR MPL-2.0)" \
+    org.opencontainers.image.licenses="GPL-3.0-only AND 0BSD AND AFL-2.1 AND AGPL-3.0-or-later AND any-OSI AND Apache-2.0 AND Beerware AND Bitstream-Vera AND blessing AND BSD-1-Clause AND BSD-2-Clause AND BSD-3-Clause AND BSD-3-Clause-Attribution AND BSD-4-Clause AND BSD-4-Clause-UC AND BSL-1.0 AND bzip2-1.0.6 AND CC0-1.0 AND CNRI-Python AND FSFAP AND FSFUL AND FSFULLR AND FTL AND GFDL-1.1-or-later AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND HPND AND HPND-sell-variant AND IJG AND ImageMagick AND Inner-Net-2.0 AND ISC AND LGPL-2.0-or-later AND LGPL-2.1-only AND LGPL-2.1-or-later AND LGPL-3.0-only AND LGPL-3.0-or-later AND Libpng AND libpng-2.0 AND libtiff AND LicenseRef-BSD-2-Clause-alike AND LicenseRef-BSD-2-Clause-regents AND LicenseRef-BSD-2.2-clause AND LicenseRef-BSD-3-clause-Carnegie AND LicenseRef-BSD-3-clause-JANET AND LicenseRef-BSD-3-clause-PADL AND LicenseRef-BSD-3-clause-variant AND LicenseRef-BSD-BY-LC-NE AND LicenseRef-BSD-like-Spencer AND LicenseRef-BSD-like-with-advertising-clause AND LicenseRef-BSLA AND LicenseRef-Carnegie AND LicenseRef-CORE-MATH AND LicenseRef-DEC AND LicenseRef-Expat-ISC AND LicenseRef-Expat-UNM AND LicenseRef-F5 AND LicenseRef-flite AND LicenseRef-flite-manual AND LicenseRef-g10-permissive AND LicenseRef-GPL-2.0-or-later-with-link-exception AND LicenseRef-IBM AND LicenseRef-IBM-as-is AND LicenseRef-JCG AND LicenseRef-LGPL-2.1-or-later-with-link-exception AND LicenseRef-libpulse-other AND LicenseRef-LIBTIFF-GLARSON AND LicenseRef-LIBTIFF-PIXAR AND LicenseRef-MIT-Export AND LicenseRef-MIT-like-Lord AND LicenseRef-MIT-Old-Style-with-legal-disclaimer-2 AND LicenseRef-MIT-OpenVision AND LicenseRef-MIT-SMC AND LicenseRef-MIT-XC AND LicenseRef-NeoSoft-permissive AND LicenseRef-OCB-1 AND LicenseRef-OpenGroup-MIT AND LicenseRef-PCRE AND LicenseRef-Public-Domain AND LicenseRef-RFC-special AND LicenseRef-rfc3533-license AND LicenseRef-rfc5334-license AND LicenseRef-sun AND LicenseRef-Tcl-BSDish AND LicenseRef-UMich AND LicenseRef-Univ-Coimbra AND LicenseRef-UnRAR AND MIT AND MIT-0 AND MIT-CMU AND MIT-Modern-Variant AND MPL-2.0 AND NTP AND OFL-1.1 AND OLDAP-2.8 AND PSF-2.0 AND python-ldap AND RSA-MD AND SunPro AND TU-Berlin-2.0 AND Unicode-3.0 AND Unicode-DFS-2016 AND Unlicense AND X11 AND X11-distribute-modifications-variant AND Zlib AND ZPL-2.1 AND (0BSD OR CC0-1.0) AND (AFL-2.1 OR GPL-2.0-or-later) AND (Apache-2.0 OR BSD-2-Clause) AND (Apache-2.0 OR BSD-3-Clause OR libpng-2.0) AND (Apache-2.0 OR BSD-3-Clause) AND (Apache-2.0 OR MIT) AND (BSD-2-Clause OR GPL-2.0-only) AND (BSD-2-Clause OR GPL-2.0-or-later) AND (BSD-3-Clause OR GPL-2.0-only) AND (BSD-3-Clause OR GPL-2.0-or-later) AND (BSD-3-Clause OR LGPL-2.1-or-later) AND (BSD-3-Clause OR ZPL-2.1) AND (BSD-3-Clause WITH PCRE2-exception) AND (GPL-2.0-only OR GPL-3.0-only) AND (GPL-2.0-only WITH Linux-syscall-note) AND (GPL-2.0-or-later OR LGPL-2.1-or-later OR MPL-1.1) AND (GPL-2.0-or-later OR LGPL-2.1-or-later OR MPL-2.0) AND (GPL-2.0-or-later OR LGPL-2.1-or-later) AND (GPL-2.0-or-later OR LicenseRef-BSD-like-with-advertising-clause) AND (GPL-2.0-or-later WITH Autoconf-exception-2.0) AND (GPL-2.0-or-later WITH Libtool-exception) AND (GPL-3.0-or-later WITH Autoconf-exception-3.0) AND (GPL-3.0-or-later WITH Libtool-exception)" \
     io.github.divbast.scan.sboms="/usr/local/share/divbast/calibre-bundle.cdx.json,/usr/local/share/divbast/tools.cdx.json" \
     io.github.divbast.scan.sboms.advisory="/usr/local/share/divbast/calibre-bundle.cdx.json"
 

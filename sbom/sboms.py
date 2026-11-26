@@ -4,14 +4,16 @@
 """Write the image's two CycloneDX SBOMs, of what no scanner sees in it.
 
 The Containerfile's sbom stage runs this, in the build's own Python, as
-``python3 -I sboms.py --sources <sources.json> --unrar ... --out <dir>``.
+``python3 -I sboms.py --sources <sources.json> --pyproject <pyproject.toml> --unrar ... --out <dir>``.
 
 ``calibre-bundle.cdx.json`` names the libraries Calibre's build compiled
 into its Linux bundle, from the bundle's ``bypy/sources.json``: every
 entry built for Linux, but for the build's own tools. Each is named by the
-CPE the scan matches it by, with its licence, from the table below. A
-library the table does not name fails the build, with a line saying what
-to add, so that no library goes unlisted.
+CPE the scan matches it by, with its licence, from the table below. It
+also names the Python packages Calibre freezes into the bundle, from the
+dependencies its ``pyproject.toml`` pins, each by its PyPI purl. A library
+or package a table does not name fails the build, with a line saying what
+to add, so that none goes unlisted.
 
 ``tools.cdx.json`` names the tools the image builds itself: ImageMagick,
 Ghostscript and the jbig2dec inside it, kepubify and unrar.
@@ -22,7 +24,9 @@ stderr and exits with code 1.
 
 import argparse
 import json
+import re
 import sys
+import tomllib
 from pathlib import Path
 from typing import NamedTuple
 
@@ -120,8 +124,73 @@ LIBRARIES = {
     "zstd": Library("facebook", "zstandard", "BSD-3-Clause OR GPL-2.0-only"),
 }
 
+# The Python packages Calibre's build freezes into the bundle, by the
+# name pyproject.toml gives each, normalised: the licence each is under,
+# as SPDX writes it, from its release on PyPI.
+FROZEN = {
+    "apify-fingerprint-datapoints": "Apache-2.0",
+    "apsw": "any-OSI",
+    "beautifulsoup4": "MIT",
+    "brotli": "MIT",
+    "browserforge": "Apache-2.0",
+    "chardet": "LGPL-2.1-or-later",
+    "click": "BSD-3-Clause",
+    "css-parser": "LGPL-3.0-or-later",
+    "deprecated": "MIT",
+    "dnspython": "ISC",
+    "feedparser": "BSD-2-Clause",
+    "feedparser-sgmllib": "PSF-2.0",
+    "fonttools": "MIT",
+    "html2text": "GPL-3.0-or-later",
+    "html5-parser": "Apache-2.0",
+    "html5lib": "MIT",
+    "ifaddr": "MIT",
+    "inflate64": "LGPL-2.1-or-later",
+    "jaconv": "MIT",
+    "jeepney": "MIT",
+    "kovidgoyal-langtool": "LGPL-2.1-or-later",
+    "lxml": "BSD-3-Clause",
+    "lxml-html-clean": "BSD-3-Clause",
+    "markdown": "BSD-3-Clause",
+    "mechanize": "BSD-3-Clause OR ZPL-2.1",
+    "msgpack": "Apache-2.0",
+    "multivolumefile": "LGPL-2.1-or-later",
+    "netifaces": "MIT",
+    "pillow": "MIT-CMU",
+    "psutil": "BSD-3-Clause",
+    "py7zr": "LGPL-2.1-or-later",
+    "pybcj": "LGPL-2.1-or-later",
+    "pychm": "GPL-2.0-or-later",
+    "pycryptodome": "BSD-2-Clause AND LicenseRef-Public-Domain",
+    "pygments": "BSD-2-Clause",
+    "pykakasi": "GPL-3.0-or-later",
+    "pyppmd": "LGPL-2.1-or-later",
+    "pyqt6": "GPL-3.0-only",
+    "pyqt6-sip": "BSD-2-Clause",
+    "pyqt6-webengine": "GPL-3.0-only",
+    "pystache": "MIT",
+    "python-dateutil": "Apache-2.0 AND BSD-3-Clause",
+    "regex": "Apache-2.0 AND CNRI-Python",
+    "six": "MIT",
+    "soupsieve": "MIT",
+    "texttable": "MIT",
+    "typing-extensions": "PSF-2.0",
+    "tzdata": "Apache-2.0",
+    "tzlocal": "MIT",
+    "unrardll": "BSD-3-Clause",
+    "webencodings": "BSD-3-Clause",
+    "wrapt": "BSD-2-Clause",
+    "xxhash": "BSD-2-Clause",
+    "zeroconf": "LGPL-2.1-or-later",
+}
+
 # Where the bundle is in the image
 BUNDLE = "/opt/calibre"
+
+# A dependency in pyproject.toml: a name, == a version, and maybe a marker
+# that names the platform
+FROZEN_LINE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*([A-Za-z0-9.!+_-]+)\s*(?:;\s*(.*))?$")
+PLATFORM_MARKER = re.compile(r"""^sys_platform\s*(==|!=)\s*['"]([a-z0-9]+)['"]$""")
 
 
 class SBOMError(Exception):
@@ -203,6 +272,56 @@ def bundle(sources: list[dict[str, object]]) -> list[dict[str, object]]:
     return components
 
 
+def normalise(name: str) -> str:
+    """Return a Python package's name as PyPI and purls compare it."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def on_linux(marker: str | None) -> bool:
+    """Say whether a dependency with marker is installed on Linux.
+
+    Only a marker on sys_platform is read; any other fails, since it might
+    say something the SBOM would then get wrong.
+    """
+    if not marker:
+        return True
+    m = PLATFORM_MARKER.match(marker.strip())
+    if m is None:
+        msg = f"pyproject.toml has the marker {marker!r}, which this writer does not read: teach it to"
+        raise SBOMError(msg)
+    return (m.group(2) == "linux") == (m.group(1) == "==")
+
+
+def frozen(pyproject: dict[str, object]) -> list[dict[str, object]]:
+    """Return the Python packages Calibre freezes, from its pyproject.toml.
+
+    Each is at the version pyproject.toml pins with ==, which Calibre's
+    build installs, and named by its PyPI purl.
+    """
+    project = pyproject.get("project")
+    deps = project.get("dependencies") if isinstance(project, dict) else None
+    if not isinstance(deps, list) or not deps:
+        msg = "pyproject.toml lists no [project] dependencies"
+        raise SBOMError(msg)
+    components = []
+    for dep in deps:
+        m = FROZEN_LINE.match(str(dep).strip())
+        if m is None:
+            msg = f"pyproject.toml's dependency {dep!r} is not one name == version"
+            raise SBOMError(msg)
+        name, version, marker = m.groups()
+        if not on_linux(marker):
+            continue
+        key = normalise(name)
+        licence = FROZEN.get(key)
+        if licence is None:
+            msg = f"pyproject.toml lists {name}, which FROZEN does not name: add its licence"
+            raise SBOMError(msg)
+        # Named as PyPI normalises the name, as grype compares it
+        components.append(component(key, version, {"purl": f"pkg:pypi/{key}@{version}"}, licence, BUNDLE))
+    return components
+
+
 def tools(args: argparse.Namespace) -> list[dict[str, object]]:
     """Return the components of the tools the image builds."""
     unrar = f"{args.unrar} beta {args.unrar_beta}" if args.unrar_beta > 0 else args.unrar
@@ -265,6 +384,7 @@ def main() -> int:
     """Write both SBOMs, or say in one line why not."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--sources", type=Path, required=True)
+    parser.add_argument("--pyproject", type=Path, required=True)
     parser.add_argument("--unrar", required=True)
     parser.add_argument("--unrar-beta", type=int, required=True)
     parser.add_argument("--imagemagick", required=True)
@@ -274,9 +394,10 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     try:
-        write(args.out / "calibre-bundle.cdx.json", bom(bundle(read_sources(args.sources))))
+        pyproject = tomllib.loads(args.pyproject.read_text(encoding="utf-8"))
+        write(args.out / "calibre-bundle.cdx.json", bom(bundle(read_sources(args.sources)) + frozen(pyproject)))
         write(args.out / "tools.cdx.json", bom(tools(args)))
-    except (OSError, ValueError, SBOMError) as e:
+    except (OSError, ValueError, tomllib.TOMLDecodeError, SBOMError) as e:
         sys.stderr.write(f"sboms.py: {e}\n")
         return 1
     return 0
