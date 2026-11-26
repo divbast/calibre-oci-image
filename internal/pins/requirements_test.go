@@ -156,6 +156,58 @@ func TestMergePins(t *testing.T) {
 	}
 }
 
+// leftOutText leaves out two of upstream's packages: one upstream pins,
+// and one it leaves unpinned, which then needs no pin of its own.
+const leftOutText = `# builds cffi from source
+setuptools==82.0.1
+
+# leaves out: there is no desktop to notify
+notify2
+
+# leaves out: nothing in the image signs anything
+cryptography
+`
+
+func TestMergeLeavesOut(t *testing.T) {
+	t.Parallel()
+	reqs := upstream(t)
+	pins, err := ParsePins(strings.NewReader(leftOutText))
+	if err != nil {
+		t.Fatalf("ParsePins() = %v", err)
+	}
+	if i := slices.IndexFunc(pins, func(p Pin) bool { return p.Name == "notify2" }); i < 0 ||
+		pins[i].Kind != KindLeftOut || pins[i].Version != "" || pins[i].Note != "leaves out: there is no desktop to notify" {
+		t.Errorf("ParsePins() = %+v, want notify2 left out, with no version and its reason", pins)
+	}
+	got, err := Merge(reqs, pins)
+	if err != nil {
+		t.Fatalf("Merge() = %v", err)
+	}
+	if n := len(got); n != 7 {
+		t.Errorf("Merge() gave %d packages, want upstream's 9 but the 2 left out", n)
+	}
+	for _, name := range []string{"notify2", "cryptography"} {
+		if slices.ContainsFunc(got, func(p Pinned) bool { return Normalize(p.Name) == name }) {
+			t.Errorf("Merge() = %+v, which installs %s, left out", got, name)
+		}
+	}
+	if !slices.ContainsFunc(got, func(p Pinned) bool { return p.Name == "sabctools" && p.Version == "10.0.0" }) {
+		t.Errorf("Merge() = %+v, want sabctools still at upstream's 10.0.0", got)
+	}
+
+	// A package upstream's list does not name cannot be left out: pins.txt
+	// would say something that is not so
+	stale := leftOutText + "\n# leaves out: upstream dropped it long ago\nleftpad\n"
+	pins, err = ParsePins(strings.NewReader(stale))
+	if err != nil {
+		t.Fatalf("ParsePins() = %v", err)
+	}
+	want := "pins.txt line 11 leaves out leftpad, which upstream's list does not name: remove it"
+	if _, err := Merge(reqs, pins); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("Merge() leaving out a package upstream does not name = %v, want an error containing %q", err, want)
+	}
+}
+
 func TestParsePinsRefuses(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct{ name, text, want string }{
@@ -164,6 +216,10 @@ func TestParsePinsRefuses(t *testing.T) {
 		{"range", "# builds cffi from source\nsetuptools>=82\n", "setuptools>=82"},
 		{"twice", "# builds cffi from source\nsetuptools==82.0.1\n# builds PyYAML from source\nsetuptools==82.0.0\n", "twice"},
 		{"dangling", "# builds cffi from source\n", "line 1"},
+		{"left-out-version", "# leaves out: no desktop\nnotify2==0.3.1\n", "must be a package's name alone, with no version"},
+		{"left-out-no-reason", "# leaves out:\nnotify2\n", "gives no reason"},
+		{"name-alone", "# needed by apprise\nhttptools\n", `"httptools" is not one package==version`},
+		{"left-out-twice", "# leaves out: no desktop\nnotify2\n# leaves out: still none\nnotify2\n", "twice"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

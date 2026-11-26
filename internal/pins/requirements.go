@@ -109,25 +109,36 @@ const (
 	// KindBuild is a build backend, or one of its own requirements, which
 	// a source build needs and the image never ships.
 	KindBuild = "builds "
+	// KindLeftOut is a package upstream's list names that the image does
+	// not install, written by its name alone, under a comment that says
+	// why.
+	KindLeftOut = "leaves out: "
 )
 
 // Pin is one line of pins.txt: a package at one version, and the comment
-// above it, which says why the line is there.
+// above it, which says why the line is there. A KindLeftOut pin has no
+// version.
 type Pin struct {
 	Name, Version string
-	// Kind is KindUnpinned, KindNeeded or KindBuild, and Note the whole
-	// comment.
+	// Kind is KindUnpinned, KindNeeded, KindBuild or KindLeftOut, and Note
+	// the whole comment.
 	Kind, Note string
 	Line       int
 }
 
-// pinLine is a pins.txt line: one package at one version.
-var pinLine = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9.!+_-]+)$`)
+var (
+	// pinLine is a pins.txt line: one package at one version.
+	pinLine = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9.!+_-]+)$`)
+	// leftOutLine is a KindLeftOut line: one package, by its name alone.
+	leftOutLine = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+)
 
 // ParsePins reads pins.txt: each line a package==version, under a comment
 // that says which kind of pin it is, from KindUnpinned, KindNeeded and
-// KindBuild. A pin with no such comment, a comment with no pin under it, a
-// range, or a package pinned twice is an error.
+// KindBuild; or a package's name alone, under a KindLeftOut comment that
+// gives a reason. A pin with no such comment, a comment with no pin under
+// it, a range, a version under KindLeftOut, a name alone under any other
+// kind, or a package named twice is an error.
 func ParsePins(r io.Reader) ([]Pin, error) {
 	var pins []Pin
 	seen := map[string]int{}
@@ -146,28 +157,15 @@ func ParsePins(r io.Reader) ([]Pin, error) {
 			}
 			note, noteLine = strings.TrimSpace(strings.TrimPrefix(line, "#")), n
 		default:
-			m := pinLine.FindStringSubmatch(line)
-			if m == nil {
-				return nil, fmt.Errorf("pins.txt line %d: %q is not one package==version", n, line)
+			p, err := parsePin(n, line, note, noteLine)
+			if err != nil {
+				return nil, err
 			}
-			if note == "" {
-				return nil, fmt.Errorf("pins.txt line %d: %s needs a comment above it saying why: %q, %q or %q",
-					n, line, "# "+KindUnpinned+"<requirement>", "# "+KindNeeded+"<package>", "# "+KindBuild+"<packages> from source")
+			if first, ok := seen[Normalize(p.Name)]; ok {
+				return nil, fmt.Errorf("pins.txt line %d: %s is pinned twice, here and on line %d", n, p.Name, first)
 			}
-			kind := ""
-			for _, k := range []string{KindUnpinned, KindNeeded, KindBuild} {
-				if strings.HasPrefix(note, k) {
-					kind = k
-				}
-			}
-			if kind == "" {
-				return nil, fmt.Errorf("pins.txt line %d: the comment %q says none of %q, %q or %q", noteLine, note, KindUnpinned, KindNeeded, KindBuild)
-			}
-			if first, ok := seen[Normalize(m[1])]; ok {
-				return nil, fmt.Errorf("pins.txt line %d: %s is pinned twice, here and on line %d", n, m[1], first)
-			}
-			seen[Normalize(m[1])] = n
-			pins = append(pins, Pin{Name: m[1], Version: m[2], Kind: kind, Note: note, Line: n})
+			seen[Normalize(p.Name)] = n
+			pins = append(pins, p)
 			note = ""
 		}
 	}
@@ -175,6 +173,39 @@ func ParsePins(r io.Reader) ([]Pin, error) {
 		return nil, fmt.Errorf("pins.txt line %d: the comment %q has no pin under it", noteLine, note)
 	}
 	return pins, sc.Err()
+}
+
+// parsePin reads line n of pins.txt, under the comment note on line
+// noteLine.
+func parsePin(n int, line, note string, noteLine int) (Pin, error) {
+	if note == "" {
+		return Pin{}, fmt.Errorf("pins.txt line %d: %s needs a comment above it saying why: %q, %q, %q or %q",
+			n, line, "# "+KindUnpinned+"<requirement>", "# "+KindNeeded+"<package>", "# "+KindBuild+"<packages> from source",
+			"# "+KindLeftOut+"<why>")
+	}
+	kind := ""
+	for _, k := range []string{KindUnpinned, KindNeeded, KindBuild, KindLeftOut} {
+		if strings.HasPrefix(note, k) {
+			kind = k
+		}
+	}
+	switch {
+	case note == strings.TrimSpace(KindLeftOut):
+		return Pin{}, fmt.Errorf("pins.txt line %d: %q gives no reason: say why the image leaves the package out", noteLine, note)
+	case kind == "":
+		return Pin{}, fmt.Errorf("pins.txt line %d: the comment %q says none of %q, %q, %q or %q",
+			noteLine, note, KindUnpinned, KindNeeded, KindBuild, KindLeftOut)
+	case kind == KindLeftOut:
+		if !leftOutLine.MatchString(line) {
+			return Pin{}, fmt.Errorf("pins.txt line %d: %q is under %q, so it must be a package's name alone, with no version", n, line, note)
+		}
+		return Pin{Name: line, Kind: kind, Note: note, Line: n}, nil
+	}
+	m := pinLine.FindStringSubmatch(line)
+	if m == nil {
+		return Pin{}, fmt.Errorf("pins.txt line %d: %q is not one package==version", n, line)
+	}
+	return Pin{Name: m[1], Version: m[2], Kind: kind, Note: note, Line: n}, nil
 }
 
 // Pinned is a package at the one version the image installs, and why
@@ -188,8 +219,10 @@ type Pinned struct {
 // Merge gives each package of reqs, upstream's, its version: upstream's
 // own pin, which nothing in pins overrides, or else the KindUnpinned pin
 // for it, which must name upstream's requirement as upstream writes it and
-// meet it. Each KindNeeded pin is added. Every mismatch between the two is
-// an error, all of them joined, each saying what to change.
+// meet it. A package a KindLeftOut pin names is not given one, and so not
+// installed. Each KindNeeded pin is added. Every mismatch between the two
+// is an error, all of them joined, each saying what to change; a
+// KindLeftOut pin for a package upstream's list does not name is one.
 func Merge(reqs []Requirement, pins []Pin) ([]Pinned, error) {
 	byName := map[string]Pin{}
 	for _, p := range pins {
@@ -206,6 +239,9 @@ func Merge(reqs []Requirement, pins []Pin) ([]Pinned, error) {
 		key := Normalize(r.Name)
 		p, pinned := byName[key]
 		used[key] = true
+		if pinned && p.Kind == KindLeftOut {
+			continue
+		}
 		if v, ok := r.Pinned(); ok {
 			if pinned {
 				errs = append(errs, fmt.Errorf("%s is pinned by upstream at %s, and upstream's pin stands: remove pins.txt line %d", r.Name, v, p.Line))
@@ -251,6 +287,8 @@ func Merge(reqs []Requirement, pins []Pin) ([]Pinned, error) {
 			out = append(out, Pinned{Name: p.Name, Version: p.Version, Why: "pins.txt: " + p.Note})
 		case p.Kind == KindUnpinned && !used[key]:
 			errs = append(errs, fmt.Errorf("pins.txt line %d pins %s, which upstream's list no longer names: remove it", p.Line, p.Name))
+		case p.Kind == KindLeftOut && !used[key]:
+			errs = append(errs, fmt.Errorf("pins.txt line %d leaves out %s, which upstream's list does not name: remove it", p.Line, p.Name))
 		}
 	}
 	return out, errors.Join(errs...)

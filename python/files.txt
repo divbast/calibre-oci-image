@@ -108,7 +108,6 @@ d6f88de62e1d4e38ecb1077eb9724cd0eff29d2a08ca16a401e9b9e93f117cf9 https://files.p
 aaa90064c9bb642ff1d065b22ca8958a2cb6e345909cefe70d0e5452fc50e08b https://files.pythonhosted.org/packages/8e/a3/023b1fe763bd91cfd43aa2c2960a0f1620f0a4c184bbbfc3e3f6fdc31b06/google_api_python_client-2.202.0-py3-none-any.whl
 c3c7606c27503ad8d501270406e345ddb480a7b5f38827eafe4fa82a137f0021 https://files.pythonhosted.org/packages/8f/b7/559f59d57d18b44c6d1250d2eeaa676e028b9c527431f5d0736478a73ba1/Unidecode-1.4.0-py3-none-any.whl
 0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3 https://files.pythonhosted.org/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl
-b8a81cc5d60e2d364f0b1b98f958dbd472887acaf1a5b05e21c28c31a2d6d3ac https://files.pythonhosted.org/packages/95/a9/4f25a14d23f0786b64875b91784607c2277eff25d48f915e39ff0cff505a/oauth2client-4.1.3-py2.py3-none-any.whl
 258fde948cf45aab5df23fcc9e17a9050ee73d4e1002fe6cf86519f61c414778 https://files.pythonhosted.org/packages/96/62/0c1cf20fe158b0e623e78acbf5fb6de5f1410a408f65f727e4090497627b/meson_python-0.22.1-py3-none-any.whl
 f6f868a457a6bd485b78d26e619045718bcd0b7720a6bf97d5fe86a1523423e8 https://files.pythonhosted.org/packages/96/bd/72bace0bf4025af8ab4bf972394fab466d4b565cdbea805281fbee9a8dbc/py7zr-1.1.4-py3-none-any.whl
 82e7a6ab08fcb27879864ddf63dbb529fb032ca336c331cb1597d6dd8b47c92e https://files.pythonhosted.org/packages/9c/47/1d02221cde942fdd7a4ce4a940682e0b054534215ab02ffdee4955e4d66c/httplib2-0.32.1-py3-none-any.whl
@@ -122,7 +121,6 @@ b1a4739bea23a02a4cb7da9437d3e79645bac66cddec07051597149357191c09 https://files.p
 61eea322cdf56e8cc904bd3ad7573359a242ba65688716b0710a5eb12beab584 https://files.pythonhosted.org/packages/a4/f5/10b68b7b1544245097b2a1b8238f66f2fc6dcaeb24ba5d917f52bd2eed4f/wsproto-1.3.2-py3-none-any.whl
 c66ae634e0b8228396b801741beb3294326d4b6102f7bba4041c0dfb58c29026 https://files.pythonhosted.org/packages/a9/16/7757fb84c819accc7d7e9af5291b261e4abb8627ee040f99e7d35ef2457a/anyio-4.16.0-py3-none-any.whl
 2cbd737377e710ee740d261c94e93fa0f08e6d037c18f17513cc0a2d94479a34 https://files.pythonhosted.org/packages/a9/2d/610db864d7513158cebb8f36cc88e67e73bd6c7aa1905ef18d89e1281c81/opentelemetry_api-1.45.2-py3-none-any.whl
-a3b72e522b8f5ba4e93ab165bbf120544567583c61a6c7904ef1ff47afc005d6 https://files.pythonhosted.org/packages/a9/32/8f16d52289785f0ee95263922814be0cacc5c20ff3dc58a38d809d04ac30/PyDrive2-1.21.2-py3-none-any.whl
 962201ba1c4edcab02e60f9a0d3821e82dfc5d2d6662a21abd533879bdb8a686 https://files.pythonhosted.org/packages/a9/99/3ae339466c9183ea5b8ae87b34c0b897eda475d2aec2307cae60e5cd4f29/uritemplate-4.2.0-py3-none-any.whl
 0746f5f8d406af344fd547f1c8daa5f5c33dbc293bb8d6a16d80b4bb88f59372 https://files.pythonhosted.org/packages/aa/c6/d1ddf4abb55e93cebc4f2ed8b5d6dbad109ecb8d63748dd2b20ab5e57ebe/psutil-7.2.2.tar.gz
 8acd070469a7aaf43f440b022ef9757c8cac1a9f866e933f59ae98669ddc6c8b https://files.pythonhosted.org/packages/b1/05/a3ef5b1161498e7b5a2a60288a9cf41b9149e94555423a43ec536737ac1a/proto_plus-1.29.0-py3-none-any.whl
@@ -130,7 +128,6 @@ a3b72e522b8f5ba4e93ab165bbf120544567583c61a6c7904ef1ff47afc005d6 https://files.p
 be404853e0d020254de32d2050c54dc201f1f36efa4a9d3f8e740d3be4361b20 https://files.pythonhosted.org/packages/b6/23/4340a9068b451b7bb03ff02243bd7aea4c1869781f41e2387c9348629edd/scholarly-1.7.11-py3-none-any.whl
 7fed3fee8fd6bd4a2b7b75a8d56021d0624127bf69bd5691f115db929ac570b3 https://files.pythonhosted.org/packages/b6/25/564f3fc5b70c1398d706c51f2b1470d0ea0b1b2f96fee67877b6f5bdf3b6/pytz-2026.6-py2.py3-none-any.whl
 a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e https://files.pythonhosted.org/packages/b6/ae/315bbeee126a769cbde43cf4908acb4b40408d8bf8bbf334dd7368d8dadf/pycparser-3.12-py3-none-any.whl
-4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl
 2826a006b68acfd3ed5074433caafe21d7f9d026eb82cb856724a4a893a70915 https://files.pythonhosted.org/packages/b8/17/ef8c46a9e7cf2304968eb260f594bbd4220fab6281e64c090cdd85884511/regex-2026.11.19.tar.gz
 b30cb6cd253122169c47de245ca24a86bac2a5d3802ba15bf7ba6414eb9e144d https://files.pythonhosted.org/packages/b8/44/7bd2007260da11cccca29ba2d4c345f1287aa663db38ee7cefeabf6386a5/zipp-4.1.2-py3-none-any.whl
 f7162d580a96386a8eb096da06215f981f547d1490f03055ef99e323bc2da427 https://files.pythonhosted.org/packages/b9/8e/d883718e872abc214ba053f60f7e6edc2abd5ffbd1544beb01a9c92ddd3c/pyproject_metadata-0.12.1-py3-none-any.whl
@@ -146,7 +143,6 @@ cdcd1ba258178f7356d74170c9a81ba4eab6a5d55748bc402a5a2a6fe6be3510 https://files.p
 02b2f7b5a83485efe448a44ddf7983def05c3bb1dcf917d4f7154070260e13de https://files.pythonhosted.org/packages/cf/81/1546c983678a9b4e77cb4718eaedd1b2caf24a6cdbf1eb8775938d22aff7/brotli-1.2.1.tar.gz
 96e268b0cbda016ac519513294fcd17032264085b600abaac58b93049477e132 https://files.pythonhosted.org/packages/d2/0d/07ab8eb9b7015274353eac2add4067bde1ab1b51912bbae505392905eedd/charset_normalizer-3.5.3-py3-none-any.whl
 1be4912438be5c2dcf02bfc424d49a49d877c03d9455f48bdd5b47aab884858d https://files.pythonhosted.org/packages/d4/c9/b117a6640b025f7bbf52a1c8bcf5d3532f9237a87e0fb56978a4e7c0a8cc/flask_simpleldap-2.1.0-py3-none-any.whl
-ea252b38c87425b64116f808355e8da644ef9b07e429398bfece610f893ee2e0 https://files.pythonhosted.org/packages/d5/9f/9c0e3288b85f907a008f9d31318b0e4de31b2f67724a8745e633741f609c/pyOpenSSL-22.0.0-py2.py3-none-any.whl
 e1a673830a9c7bfa47b1cd3d5e4178f4c9651d80a4eab02c9c23a1c3ec6250ce https://files.pythonhosted.org/packages/d5/d2/cc4dc1271e464942db7ee278baae2daa99ee77cb2af744025c04da585a3e/websocket_client-1.9.2-py3-none-any.whl
 c5a9550a2ff2bfc91fd854454fb7080d9ace05a21770865555e61dbbeec1753e https://files.pythonhosted.org/packages/d7/f1/fd524385af8a5f65c27a5b8b765321558feb014b213a22e30ae6c3ec8bc2/wand-0.7.3-py3-none-any.whl
 15ca92fe0eec82f0baf91a7efcc51ffacdb605924be6327683a52ebdacb6744c https://files.pythonhosted.org/packages/da/c2/2965c35b39587d4b7a397f65a9c7d4b942b031061e7ac1ce91782f394a0d/sphinxcontrib_jsmath-2.0.0-py3-none-any.whl

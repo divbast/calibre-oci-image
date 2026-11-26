@@ -282,6 +282,41 @@ func TestCheckMode(t *testing.T) {
 	}
 }
 
+// TestLeftOut is pins.txt leaving out one of upstream's packages: it is in
+// neither lock nor files.txt, and -check holds the locks to that. A package
+// left out that upstream's list does not name fails -check, naming it.
+func TestLeftOut(t *testing.T) {
+	t.Parallel()
+	src, _ := servers(t)
+	dir := repo(t, requirements)
+	leftOut := pinsTxt + "\n# leaves out: the image has no use for it\nujson\n"
+	if err := os.WriteFile(filepath.Join(dir, "python", "pins.txt"), []byte(leftOut), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errs := runIn(t, src, dir); code != 0 {
+		t.Fatalf("generate = %d; stderr: %s", code, errs)
+	}
+	lock := read(t, dir, "python/requirements.lock")
+	files := read(t, dir, "python/files.txt")
+	if strings.Contains(lock, "ujson") || strings.Contains(files, "ujson") {
+		t.Errorf("requirements.lock =\n%s\nfiles.txt =\n%s\nwant neither to name ujson, which pins.txt leaves out", lock, files)
+	}
+	if !strings.Contains(lock, "--no-binary cryptography\n") || !strings.Contains(lock, "six==1.17.0 \\\n") {
+		t.Errorf("requirements.lock =\n%s\nwant six and cryptography still, and cryptography alone built from source", lock)
+	}
+	if code, out, errs := runIn(t, src, dir, "-check"); code != 0 || out != "" {
+		t.Errorf("-check when current = %d, %q (stderr %q); want 0 and nothing", code, out, errs)
+	}
+
+	stale := leftOut + "\n# leaves out: upstream dropped it\nleftpad\n"
+	if err := os.WriteFile(filepath.Join(dir, "python", "pins.txt"), []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errs := runIn(t, src, dir, "-check"); code != 1 || !strings.Contains(errs, "leaves out leftpad, which upstream's list does not name: remove it") {
+		t.Errorf("-check with a stale left-out package = %d, stderr %q; want 1, naming leftpad", code, errs)
+	}
+}
+
 // TestIncludedRequirements is requirements.in naming the upstream's own
 // requirements.txt, at the commit the Containerfile pins, by an ARG.
 func TestIncludedRequirements(t *testing.T) {
