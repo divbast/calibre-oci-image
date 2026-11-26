@@ -9,7 +9,7 @@
 // Usage:
 //
 //	divbast-calibre serve      first start, then the two apps
-//	divbast-calibre health     check the page and /healthz, both on :8080
+//	divbast-calibre health     check both apps answer, and ports 8080 and 8083 are listened on
 //	divbast-calibre version    print the version
 //	divbast-calibre calibredb  run calibredb for Calibre-Web; a link named calibredb does the same
 //
@@ -32,15 +32,25 @@
 // state to /tmp/divbast-calibre/state.json, for health. On SIGTERM or
 // SIGINT it stops both apps and exits.
 //
-// health prints nothing when both halves hold, and one "<check>: <reason>"
-// line for each that does not.
+// health reads the state file, asks each app that is up to answer on its
+// loopback port, and checks that ports 8080 and 8083 are listened on,
+// on every address. The Content Server must answer 200 to the internal
+// user, and name the Calibre version the image is built from. Calibre-Web
+// must answer 200. An app in a planned restart for under 2 minutes is
+// healthy. health prints nothing when all of it holds, and one
+// "<check>: <reason>" line for each part that does not.
+//
+// calibredb is what Calibre-Web runs, as /opt/calibre-bin/calibredb. It
+// sends the three calls Calibre-Web makes, --version, export and
+// show_metadata, through the Content Server as its internal user, and
+// refuses every other. Calibre's own calibredb replaces it.
 //
 // Exit codes:
 //
 //	0  healthy, the version printed, or serve stopped as asked
-//	1  a half of health did not hold; serve could not start, or an app
-//	   had to be killed as it stopped; or calibredb is not written yet
-//	2  the command line is wrong
+//	1  health did not hold; serve could not start, or an app had to be
+//	   killed as it stopped; or Calibre's calibredb could not be run
+//	2  the command line is wrong, or calibredb refused the call
 package main
 
 import (
@@ -61,6 +71,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/divbast/calibre-oci-image/internal/calibredb"
 	"github.com/divbast/calibre-oci-image/internal/firststart"
 	"github.com/divbast/calibre-oci-image/internal/probe"
 	"github.com/divbast/calibre-oci-image/internal/proxy"
@@ -144,10 +155,10 @@ func calibreWebSettings(books string) *firststart.CalibreWebSettings {
 
 func main() {
 	if filepath.Base(os.Args[0]) == "calibredb" {
-		os.Exit(calibredb())
+		os.Exit(runCalibredb(os.Args[1:]))
 	}
 	if len(os.Args) >= 2 && os.Args[1] == "calibredb" {
-		os.Exit(calibredb())
+		os.Exit(runCalibredb(os.Args[2:]))
 	}
 	if len(os.Args) != 2 {
 		usage()
@@ -156,7 +167,7 @@ func main() {
 	case "serve":
 		os.Exit(serve())
 	case "health":
-		os.Exit(probe.Probe(context.Background(), "http://127.0.0.1:8080/", "http://127.0.0.1:8080/healthz", os.Stderr))
+		os.Exit(health())
 	case "version":
 		fmt.Println(version)
 	default:
@@ -471,10 +482,34 @@ func (t *tracker) change(name string, st supervise.State) {
 	}()
 }
 
-// calibredb is Calibre-Web's calibredb, which is not written yet.
-func calibredb() int {
-	say(os.Stderr, "calibredb is not written yet")
-	return 1
+// within bounds each app's check in health, inside the HEALTHCHECK's 10 s
+// timeout, which holds two of them one after the other.
+const within = 4 * time.Second
+
+// plannedLimit is how long an app may be down in a planned restart and
+// health still pass.
+const plannedLimit = 2 * time.Minute
+
+// health checks the image is healthy, and returns its exit code.
+func health() int {
+	return probe.Probe(context.Background(), &probe.Options{
+		State:        statePath,
+		ServerBase:   "http://" + contentServerAddr,
+		WebBase:      "http://" + calibreWebAddr,
+		PasswordFile: filepath.Join(image.calibre(), firststart.InternalPasswordFile),
+		Version:      version,
+		Within:       within,
+		PlannedLimit: plannedLimit,
+		Ports:        []int{8080, 8083},
+		Proc:         "/proc",
+	}, os.Stderr)
+}
+
+// runCalibredb runs Calibre's calibredb for the arguments Calibre-Web gave
+// calibredb, replacing this process with it, with the environment
+// unchanged.
+func runCalibredb(args []string) int {
+	return calibredb.Run(args, os.Environ(), syscall.Exec, os.Stderr)
 }
 
 // firstStart makes what Calibre and Calibre-Web need before they first
