@@ -10,13 +10,13 @@
 //
 // It reads, in DIR, the repository's root by default:
 //   - the Containerfile's dhi.io/python images, which must be one Python;
-//   - python/requirements.in: the app's own requirements, or one -r line
-//     naming its upstream's requirements.txt by an https URL at a full
-//     commit, written with the Containerfile's ARGs as ${NAME}, such as
+//   - python/requirements.in: the app's own requirements, or -r lines
+//     naming its upstream's requirements files, each by an https URL at
+//     one full commit, written with the Containerfile's ARGs as ${NAME}, such as
 //     -r https://raw.githubusercontent.com/<owner>/<app>/${APP_COMMIT}/requirements.txt;
 //   - python/pins.txt, each pin under a comment saying why it is there.
 //
-// It fetches that requirements.txt, when requirements.in names one, and
+// It fetches those requirements files, when requirements.in names any, and
 // each package's release from PyPI, and writes:
 //   - python/requirements.lock: every package the image installs, for
 //     Linux and that Python, at the requirements' own pin or else
@@ -25,7 +25,12 @@
 //   - python/build.lock: the build backends pins.txt names, with the
 //     sha256 of each wheel a build stage may install;
 //   - python/files.txt: every file of both locks, by its sha256 and URL,
-//     which the build fetches and checks before pip reads anything.
+//     which the build fetches and checks before pip reads anything;
+//   - the Containerfile, with each empty checksum ARG of the downloads the
+//     image checks set to the sha256 of the file its URL serves, and
+//     IMAGE_PAIR, the Calibre version and the first seven characters of
+//     Calibre-Web's commit. A checksum already set is never rewritten: one
+//     the file no longer matches is an error.
 //
 // Renovate runs it in each pull request that moves one of those pins.
 // With -check it writes nothing, prints a unified diff of each file that

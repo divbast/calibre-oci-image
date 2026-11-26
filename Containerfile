@@ -1,12 +1,34 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee>
 
-# The app's own version, which tags the image: app-publish.yml reads it from
-# this line, by the name build.yml gives as version-arg. The probe carries
-# it too. An app built from an upstream pins the upstream's tag here, and
-# the commit the tag names in an ARG beneath it, which its fetch stage
-# checks out and divbast-pins reads, as SABnzbd's SABNZBD_COMMIT.
-ARG TEMPLATE_VERSION=0.2.0
+# Calibre's version, which tags the image: app-publish.yml reads it from
+# this line, by the name build.yml gives as version-arg. The two checksums
+# are of the bundles for x86-64 and for ARM, which download.calibre-ebook.com
+# serves, empty until go run ./cmd/divbast-pins fills them in.
+ARG CALIBRE_VERSION=9.19.0
+ARG CALIBRE_SHA256_X86_64=35c1cbda1a2548aceeb89cb0a4be47a36025b5dc102ac046f7eaf98ba46a452d
+ARG CALIBRE_SHA256_ARM64=8de5c5d3af3f28e0227e215a27e8d69c14c50a38cc3065b249996997df392a2f
+# Calibre-Web is built from its master branch, by a full
+# commit, and the checksum of the archive GitHub makes from it
+ARG CALIBRE_WEB_COMMIT=79d35711d73491881ecd2b13ded02c277543dbcb
+ARG CALIBRE_WEB_SHA256=0f4f0bf0e918904c13fee5052decc03cded8ac511b773f7d71245bc05309f609
+# The tag that names both apps, <Calibre version>-cw.<first 7 of the
+# Calibre-Web commit>, written by go run ./cmd/divbast-pins, which -check holds to them
+ARG IMAGE_PAIR=9.19.0-cw.79d3571
+# ImageMagick, built from the commit its annotated tag names
+ARG IMAGEMAGICK_VERSION=7.1.2-36
+ARG IMAGEMAGICK_COMMIT=dcec873ede2912a1b045a50fd54cd138ee5f3fa4
+# Ghostscript's source tarball, from the release tagged gs<GHOSTSCRIPT_TAG>
+ARG GHOSTSCRIPT_VERSION=10.08.0
+ARG GHOSTSCRIPT_TAG=10080
+ARG GHOSTSCRIPT_SHA256=c20492bc8ebb96c87fa2e52a0926e1cda8cde95d66145e018ac713fed5da38cf
+# kepubify, built from the commit its tag names
+ARG KEPUBIFY_VERSION=5.0.0
+ARG KEPUBIFY_COMMIT=29f338fe1239f3aa61e9df606fe3c5b9bda30362
+# unrar's source, which RARLAB publishes with no checksum: the one first
+# filled in holds the tarball from then on
+ARG UNRAR_VERSION=7.3.2
+ARG UNRAR_SHA256=f61a1160d6e2ebbda2ad353c8e82f62ab4312f97fde23c6c2c982d25e0014f99
 # The runtime: Docker Hardened Images' Python on Debian 13, with no shell,
 # no package manager, its nonroot user 65532, and pip, setuptools and wheel,
 # which DHI ships in it and nothing here runs. The app runs on its Python,
@@ -138,7 +160,7 @@ RUN --network=none python3 -m compileall -q -j0 -o 2 --invalidation-mode uncheck
 
 # The image's health probe, static and on the standard library alone.
 FROM dhi.io/golang:1.27.4-debian13-dev@sha256:121afb8b390b1d6babba8cd0a93eaf2ffa3735f835d388b9d79c2be38b41ee4f AS probe
-ARG TEMPLATE_VERSION
+ARG CALIBRE_VERSION
 WORKDIR /src
 # go.mod's replace names ./.ci, which the build context leaves out: the
 # probe imports nothing from divbast/ci, so Go never looks for it
@@ -146,11 +168,11 @@ COPY go.mod ./
 COPY cmd/divbast-calibre/ cmd/divbast-calibre/
 COPY internal/probe/ internal/probe/
 RUN CGO_ENABLED=0 GOFLAGS=-mod=readonly GOTOOLCHAIN=local \
-    go build -trimpath -ldflags "-s -w -X main.version=${TEMPLATE_VERSION}" \
+    go build -trimpath -ldflags "-s -w -X main.version=${CALIBRE_VERSION}" \
     -o /out/divbast-calibre ./cmd/divbast-calibre
 
 FROM runtime
-ARG TEMPLATE_VERSION
+ARG CALIBRE_VERSION
 
 # Root-owned, and never written
 COPY --from=deps /app/venv /app/venv
@@ -170,7 +192,7 @@ ENV LC_ALL=C.UTF-8 \
 LABEL org.opencontainers.image.source="https://github.com/divbast/oci-image-template" \
     org.opencontainers.image.url="https://github.com/divbast/oci-image-template" \
     org.opencontainers.image.title="oci-image-template" \
-    org.opencontainers.image.version="${TEMPLATE_VERSION}" \
+    org.opencontainers.image.version="${CALIBRE_VERSION}" \
     org.opencontainers.image.licenses="GPL-3.0-only"
 
 EXPOSE 8080

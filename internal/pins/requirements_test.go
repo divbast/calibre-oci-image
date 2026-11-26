@@ -60,6 +60,16 @@ func TestParseRequirements(t *testing.T) {
 	}
 }
 
+// A package listed twice at one specifier, as Calibre-Web's optional
+// requirements do, is kept once.
+func TestParseRequirementsDuplicate(t *testing.T) {
+	t.Parallel()
+	reqs, err := ParseRequirements(strings.NewReader("six>=1.0,<2\nrequests\nsix >=1.0, <2\n"), linux315)
+	if err != nil || len(reqs) != 2 || reqs[0].Name != "six" || reqs[1].Name != "requests" {
+		t.Errorf("ParseRequirements() = %+v, %v; want six and requests, once each", reqs, err)
+	}
+}
+
 func TestParseRequirementsRefuses(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct{ name, text, want string }{

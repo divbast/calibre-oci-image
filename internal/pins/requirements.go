@@ -87,6 +87,7 @@ func ParseRequirements(r io.Reader, env MarkerEnv) ([]Requirement, error) {
 		_, oldPinned := reqs[i].Pinned()
 		_, newPinned := req.Pinned()
 		switch {
+		case reqs[i].Specifier == req.Specifier:
 		case reqs[i].Specifier == "" && newPinned:
 			reqs[i] = req
 		case oldPinned && req.Specifier == "":

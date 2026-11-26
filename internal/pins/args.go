@@ -4,6 +4,7 @@
 package pins
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"regexp"
@@ -69,4 +70,13 @@ func Expand(containerfile []byte, s string) (string, error) {
 		return "", fmt.Errorf("%s holds a ${ with no ARG name and } after it", s)
 	}
 	return out, nil
+}
+
+// SetArg returns containerfile with its one ARG name= line set to value.
+func SetArg(containerfile []byte, name, value string) ([]byte, error) {
+	if _, err := arg(containerfile, name); err != nil {
+		return nil, err
+	}
+	re := regexp.MustCompile(`(?m)^ARG ` + regexp.QuoteMeta(name) + `=.*$`)
+	return re.ReplaceAllLiteral(bytes.Clone(containerfile), []byte("ARG "+name+"="+value)), nil
 }
