@@ -56,6 +56,10 @@ cryptography>=3.0
 pywin32==312; sys_platform == 'win32'
 `
 
+// otherCommit is another full commit, at which the test's GitHub serves
+// more.txt too, so a file at it is refused for its commit, not for a 404.
+const otherCommit = "0123456789abcdef0123456789abcdef01234567"
+
 // moreRequirements is a second requirements file at the same commit: six at
 // the first file's version again, and nothing else.
 const moreRequirements = `six==1.17.0
@@ -151,7 +155,7 @@ func servers(t *testing.T, yanked ...string) (src pins.Sources, base string) {
 			http.NotFound(w, r)
 		case r.URL.Path == upstreamPath:
 			_, _ = w.Write([]byte(requirements))
-		case r.URL.Path == "/owner/app/"+commit+"/more.txt":
+		case r.URL.Path == "/owner/app/"+commit+"/more.txt", r.URL.Path == "/owner/app/"+otherCommit+"/more.txt":
 			_, _ = w.Write([]byte(moreRequirements))
 		case r.URL.Path == "/owner/app/"+commit+"/conflict.txt":
 			_, _ = w.Write([]byte("six==1.16.0\n"))
@@ -304,7 +308,6 @@ func TestIncludedRequirementsTwoFiles(t *testing.T) {
 	t.Parallel()
 	src, base := servers(t)
 	line := func(file string) string { return "-r " + base + "/owner/app/${CALIBRE_WEB_COMMIT}/" + file + "\n" }
-	other := "0123456789abcdef0123456789abcdef01234567"
 
 	dir := repo(t, line("requirements.txt")+line("more.txt"))
 	if code, _, errs := runIn(t, src, dir); code != 0 {
@@ -326,14 +329,14 @@ func TestIncludedRequirementsTwoFiles(t *testing.T) {
 	}
 
 	for _, tt := range []struct{ name, in, want string }{
-		{"another-commit", line("requirements.txt") + "-r " + base + "/owner/app/" + other + "/more.txt\n", other},
+		{"another-commit", line("requirements.txt") + "-r " + base + "/owner/app/" + otherCommit + "/more.txt\n", "one commit"},
 		{"conflicting-specifiers", line("requirements.txt") + line("conflict.txt"), "six"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			dir := repo(t, tt.in)
-			if code, _, errs := runIn(t, src, dir); code != 1 || !strings.Contains(errs, tt.want) {
-				t.Errorf("generate = %d, stderr %q; want 1, naming %q", code, errs, tt.want)
+			if code, _, errs := runIn(t, src, dir); code != 1 || !strings.Contains(errs, tt.want) || strings.Contains(errs, "404") {
+				t.Errorf("generate = %d, stderr %q; want 1, naming %q, and no 404", code, errs, tt.want)
 			}
 			if _, err := os.Stat(filepath.Join(dir, "python", "requirements.lock")); err == nil {
 				t.Error("a lock was written")
