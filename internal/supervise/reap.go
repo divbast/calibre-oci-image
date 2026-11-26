@@ -125,11 +125,13 @@ func (r *reaper) end() {
 	}
 }
 
-// Exec runs argv once, with env (PID 1's own when nil) and stdin, and
-// returns what it wrote to stdout; its stderr is PID 1's. argv[0] is the
-// program's path, which is not looked up in PATH. An exit with a status
-// other than 0 is an error naming argv[0], and so is ctx ending first,
-// which kills the process.
+// Exec runs argv once, with env (PID 1's own when nil) less
+// PasswordVariables, and with stdin, and returns what it wrote to stdout;
+// its stderr is PID 1's. argv[0] is the program's path, which is not
+// looked up in PATH. An exit with a status other than 0 is an error
+// naming argv[0]. So is ctx ending before the program has exited, which
+// kills it, or before its stdout has been read to the end: Exec then
+// returns no output, never part of it.
 //
 // Its exit status comes from the process's one reaper, as the children's
 // do. Once Run or Exec has started that reaper, every program PID 1 runs
@@ -153,7 +155,7 @@ func (s *Supervisor) Exec(ctx context.Context, argv, env []string, stdin []byte)
 	}
 	reap.ensure()
 	reap.begin()
-	p, err := os.StartProcess(argv[0], argv, &os.ProcAttr{Env: env, Files: []*os.File{inR, outW, os.Stderr}})
+	p, err := os.StartProcess(argv[0], argv, &os.ProcAttr{Env: childEnv(env), Files: []*os.File{inR, outW, os.Stderr}})
 	closeAll(inR, outW)
 	if err != nil {
 		reap.abandon()
@@ -164,29 +166,33 @@ func (s *Supervisor) Exec(ctx context.Context, argv, env []string, stdin []byte)
 	if s.execStarted != nil {
 		s.execStarted(p.Pid)
 	}
-	ended := reap.claim(p.Pid)
+	status := reap.claim(p.Pid)
 
 	go func() {
 		_, _ = inW.Write(stdin)
 		_ = inW.Close()
 	}()
-	out := make(chan []byte, 1)
+	type read struct {
+		b   []byte
+		err error // nil once stdout was read to its end
+	}
+	out := make(chan read, 1)
 	go func() {
-		b, _ := io.ReadAll(outR)
-		out <- b
+		b, err := io.ReadAll(outR)
+		out <- read{b, err}
 	}()
 
 	var ws syscall.WaitStatus
 	select {
-	case ws = <-ended:
+	case ws = <-status:
 	case <-ctx.Done():
 		_ = p.Kill()
-		ws = <-ended
+		ws = <-status
 	}
 	_ = p.Release()
 	// A process the program started may still hold stdin or stdout open
 	_ = inW.Close()
-	var stdout []byte
+	var stdout read
 	select {
 	case stdout = <-out:
 	case <-ctx.Done():
@@ -196,12 +202,14 @@ func (s *Supervisor) Exec(ctx context.Context, argv, env []string, stdin []byte)
 	_ = outR.Close()
 
 	switch {
-	case ctx.Err() != nil && !ws.Exited():
-		return stdout, fmt.Errorf("%s: %w", argv[0], ctx.Err())
+	case ctx.Err() != nil && (!ws.Exited() || stdout.err != nil):
+		return nil, fmt.Errorf("%s: %w", argv[0], ctx.Err())
+	case stdout.err != nil:
+		return nil, fmt.Errorf("%s: reading its stdout: %w", argv[0], stdout.err)
 	case !ws.Exited() || ws.ExitStatus() != 0:
-		return stdout, fmt.Errorf("%s %s", argv[0], describe(ws))
+		return stdout.b, fmt.Errorf("%s %s", argv[0], describe(ws))
 	}
-	return stdout, nil
+	return stdout.b, nil
 }
 
 func closeAll(files ...*os.File) {

@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -31,7 +33,8 @@ type Child struct {
 	// Argv is the command line. Argv[0] is the program's path, which is
 	// not looked up in PATH.
 	Argv []string
-	// Env is the child's environment; nil means PID 1's own.
+	// Env is the child's environment; nil means PID 1's own. Either way,
+	// the child never gets PasswordVariables.
 	Env []string
 }
 
@@ -40,8 +43,9 @@ type Options struct {
 	// Min is the wait before a child that ended on its own is started
 	// again. Each time it ends again, the wait doubles, up to Max.
 	Min, Max time.Duration
-	// ResetAfter is how long a start must run for the wait to go back to
-	// Min when it ends.
+	// ResetAfter is how long a child must have run when it ends on its
+	// own for the wait to go back to Min. A planned restart does not end
+	// that run: the child was serving until it was stopped.
 	ResetAfter time.Duration
 	// Grace is how long a child has to end after SIGTERM, when Run stops
 	// or Restart stops it, before SIGKILL goes to its process group.
@@ -56,6 +60,15 @@ type State struct {
 	Planned bool `json:"planned"`
 	// Since is the time Up or Planned last changed.
 	Since time.Time `json:"since"`
+}
+
+// PasswordVariables are the environment variables that carry the first
+// accounts' passwords. No child that Start or Exec starts ever gets them.
+var PasswordVariables = [...]string{
+	"CALIBRE_ADMIN_PASSWORD",
+	"CALIBRE_ADMIN_PASSWORD_FILE",
+	"CALIBRE_WEB_ADMIN_PASSWORD",
+	"CALIBRE_WEB_ADMIN_PASSWORD_FILE",
 }
 
 // errStopping answers a Restart that Run's end overtook.
@@ -89,7 +102,7 @@ type Supervisor struct {
 type kid struct {
 	Child
 	proc    *os.Process   // nil while the child is not running
-	started time.Time     // when proc was started
+	started time.Time     // when its run began: a planned restart does not end one
 	delay   time.Duration // the wait before the start after the next end
 	planned bool          // a Restart is under way
 	gen     int           // the latest timer's number; a tick with another is stale
@@ -156,8 +169,9 @@ func New(children []Child, o Options, start func(Child) (*os.Process, error)) *S
 // Start starts c as New does when given no start function: in a process
 // group of its own, so that a signal from a terminal reaches PID 1 alone,
 // which passes SIGTERM on itself, and so that SIGKILL to the group also
-// ends the processes c starts. Its stdin is /dev/null, and its stdout and
-// stderr are PID 1's.
+// ends the processes c starts. Its stdin is /dev/null, its stdout and
+// stderr are PID 1's, and its environment is c.Env without
+// PasswordVariables.
 func Start(c Child) (*os.Process, error) {
 	return startProcess(c)
 }
@@ -174,7 +188,7 @@ func startProcess(c Child, extra ...*os.File) (*os.Process, error) {
 	}
 	defer func() { _ = null.Close() }()
 	return os.StartProcess(c.Argv[0], c.Argv, &os.ProcAttr{
-		Env:   c.Env,
+		Env:   childEnv(c.Env),
 		Files: append([]*os.File{null, os.Stdout, os.Stderr}, extra...),
 		Sys:   &syscall.SysProcAttr{Setpgid: true},
 	})
@@ -188,7 +202,7 @@ func (s *Supervisor) Run(ctx context.Context) (exitCode int) {
 	reap.ensure()
 	close(s.serving)
 	for _, k := range s.kids {
-		s.launch(k)
+		s.launch(k, false)
 	}
 	for {
 		select {
@@ -247,8 +261,9 @@ func (s *Supervisor) OnChange(f func(name string, state State)) {
 }
 
 // launch starts k. A start that fails is treated as an end: k waits, then
-// is started again.
-func (s *Supervisor) launch(k *kid) {
+// is started again. keepRun is true for the start after a planned stop,
+// which goes on with k's run rather than beginning one.
+func (s *Supervisor) launch(k *kid, keepRun bool) {
 	at := s.clk.Now()
 	reap.begin()
 	p, err := s.start(k.Child)
@@ -262,12 +277,15 @@ func (s *Supervisor) launch(k *kid) {
 		return
 	}
 	reap.started()
-	ended := reap.claim(p.Pid)
-	k.proc, k.started, k.planned = p, at, false
+	status := reap.claim(p.Pid)
+	k.proc, k.planned = p, false
+	if !keepRun {
+		k.started = at
+	}
 	s.setState(k, true, false)
 	s.answer(k, nil)
 	go func() {
-		ws := <-ended
+		ws := <-status
 		s.exits <- exit{k: k, p: p, ws: ws}
 	}()
 }
@@ -275,11 +293,11 @@ func (s *Supervisor) launch(k *kid) {
 // exited handles k's end while Run serves.
 func (s *Supervisor) exited(e exit) {
 	k := e.k
-	_ = e.p.Release()
+	ended(e.p)
 	k.proc = nil
 	if k.planned {
 		s.setState(k, false, true)
-		s.launch(k)
+		s.launch(k, true)
 		return
 	}
 	if s.clk.Now().Sub(k.started) >= s.o.ResetAfter {
@@ -322,7 +340,7 @@ func (s *Supervisor) ticked(t tick) {
 	switch {
 	case t.gen != k.gen:
 	case k.proc == nil:
-		s.launch(k)
+		s.launch(k, false)
 	case k.planned:
 		s.logf("%s did not stop within %s; killing it", k.Name, s.o.Grace)
 		kill(k.proc)
@@ -341,10 +359,11 @@ func (s *Supervisor) restart(r request) {
 		// Its stop is under way, and the start after it answers this
 		// Restart too
 	case k.proc == nil:
-		// Waiting to start again after ending on its own: start it now
+		// Waiting to start again after ending on its own: start it now.
+		// Its run ended with that end, so this start begins a new one
 		k.planned = true
 		s.setState(k, false, true)
-		s.launch(k)
+		s.launch(k, false)
 	default:
 		k.planned = true
 		s.setState(k, true, true)
@@ -372,7 +391,7 @@ func (s *Supervisor) stop() int {
 	for running > 0 {
 		select {
 		case e := <-s.exits:
-			_ = e.p.Release()
+			ended(e.p)
 			e.k.proc = nil
 			s.setState(e.k, false, false)
 			running--
@@ -397,6 +416,34 @@ func kill(p *os.Process) {
 		_ = syscall.Kill(-p.Pid, syscall.SIGKILL)
 	}
 	_ = p.Kill()
+}
+
+// ended sends SIGKILL to what is left of the process group of p, which
+// has ended, and releases p. A process p started that outlived it, such
+// as a calibre-server conversion worker, would otherwise run on beside
+// p's next start, and could hold what that start needs.
+func ended(p *os.Process) {
+	if p.Pid > 0 {
+		_ = syscall.Kill(-p.Pid, syscall.SIGKILL) // ESRCH: nothing was left
+	}
+	_ = p.Release()
+}
+
+// childEnv is env, or PID 1's environment when env is nil, without
+// PasswordVariables. It is never nil, since a nil Env would give the child
+// PID 1's environment whole.
+func childEnv(env []string) []string {
+	if env == nil {
+		env = os.Environ()
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if !slices.Contains(PasswordVariables[:], name) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // answer replies err to the Restart calls waiting on k's start.

@@ -241,3 +241,34 @@ func execWithin(t *testing.T, s *Supervisor, env []string) error {
 		return errors.New("no answer")
 	}
 }
+
+// TestExecNeverPassesPasswords: a one-off run gets no password variable,
+// whether env names them or it inherits PID 1's environment.
+// Not parallel: it sets the test process's own environment.
+func TestExecNeverPassesPasswords(t *testing.T) { //nolint:paralleltest // its helpers call t.Setenv, which sets the process's environment
+	setPasswords(t)
+	inheritEnvHelper(t)
+	s := New(nil, production, nil)
+	given := helperEnv("env", "CALIBRE_WEB_ADMIN_PASSWORD_FILE=pw-CALIBRE_WEB_ADMIN_PASSWORD_FILE")
+	for how, env := range map[string][]string{"given": given, "inherited": nil} {
+		out, err := s.Exec(t.Context(), helperArgv(), env, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", how, err)
+		}
+		checkNoPasswords(t, how, out)
+	}
+}
+
+// TestExecStdoutCutShort: when ctx ends after the program has exited 0
+// but before its stdout has been read to the end, Exec returns ctx's
+// error and no output, never the part it read as a success.
+func TestExecStdoutCutShort(t *testing.T) {
+	t.Parallel()
+	s := New(nil, production, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	out, err := s.Exec(ctx, helperArgv(), helperEnv("hold-stdout"), nil)
+	if !errors.Is(err, context.DeadlineExceeded) || out != nil {
+		t.Errorf("got %q, %v; want no output and an error wrapping %v", out, err, context.DeadlineExceeded)
+	}
+}

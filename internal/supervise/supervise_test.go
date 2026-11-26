@@ -4,6 +4,8 @@
 package supervise
 
 import (
+	"io"
+	"os"
 	"strings"
 	"syscall"
 	"testing"
@@ -346,5 +348,172 @@ func TestStartOwnGroup(t *testing.T) {
 	}
 	if pgid != p.Pid {
 		t.Errorf("the child's process group is %d, want its own, %d", pgid, p.Pid)
+	}
+}
+
+// TestPlannedRestartKeepsUptime: a planned restart does not end the run
+// ResetAfter counts. A child up 20 minutes, restarted by plan, that ends
+// on its own 3 minutes later waits Min, not its doubled wait.
+func TestPlannedRestartKeepsUptime(t *testing.T) {
+	t.Parallel()
+	h := newHelper(t, func(n int) string {
+		if n == 1 {
+			return "exit"
+		}
+		return "wait"
+	})
+	s, clk, _ := newTest(t, h, Child{Name: "a"})
+	r := runSupervisor(t, s)
+	nextStart(t, h)
+	if got := nextWait(t, clk); got != production.Min {
+		t.Fatalf("the first end set a wait of %s, want %s", got, production.Min)
+	}
+	clk.Advance(production.Min)
+	nextStart(t, h) // the next wait is now 2*Min
+
+	clk.Advance(20 * time.Minute)
+	errc := restartAsync(s)
+	if got := nextWait(t, clk); got != production.Grace {
+		t.Fatalf("the restart set a timer of %s, want %s", got, production.Grace)
+	}
+	third := nextStart(t, h)
+	if err := receive(t, errc); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	clk.Advance(3 * time.Minute)
+	_ = syscall.Kill(third.pid, syscall.SIGKILL)
+	if got := nextWait(t, clk); got != production.Min {
+		t.Errorf("after 20 minutes up, a planned restart and 3 more: got a wait of %s, want %s", got, production.Min)
+	}
+	if code := r.stop(t); code != 0 {
+		t.Errorf("Run returned %d, want 0", code)
+	}
+}
+
+// TestGroupEndsWithLeader: once a child has ended, however it ended, the
+// processes it left in its group are killed, so none outlives it into
+// its next start.
+func TestGroupEndsWithLeader(t *testing.T) {
+	t.Parallel()
+	tree := func(n int) string {
+		if n == 1 {
+			return "wait-tree"
+		}
+		return "wait"
+	}
+
+	t.Run("planned restart", func(t *testing.T) {
+		t.Parallel()
+		h := newHelper(t, tree)
+		s, _, _ := newTest(t, h, Child{Name: "a"})
+		r := runSupervisor(t, s)
+		first := nextStart(t, h)
+		t.Cleanup(func() { _ = syscall.Kill(-first.pid, syscall.SIGKILL) })
+		if err := s.Restart("a"); err != nil {
+			t.Fatalf("Restart: %v", err)
+		}
+		nextStart(t, h)
+		gone(t, first)
+		if code := r.stop(t); code != 0 {
+			t.Errorf("Run returned %d, want 0", code)
+		}
+	})
+
+	t.Run("crash", func(t *testing.T) {
+		t.Parallel()
+		h := newHelper(t, tree)
+		s, clk, _ := newTest(t, h, Child{Name: "a"})
+		r := runSupervisor(t, s)
+		first := nextStart(t, h)
+		t.Cleanup(func() { _ = syscall.Kill(-first.pid, syscall.SIGKILL) })
+		_ = syscall.Kill(first.pid, syscall.SIGKILL)
+		nextWait(t, clk)
+		gone(t, first)
+		if code := r.stop(t); code != 0 {
+			t.Errorf("Run returned %d, want 0", code)
+		}
+	})
+
+	t.Run("stop", func(t *testing.T) {
+		t.Parallel()
+		h := newHelper(t, tree)
+		s, _, _ := newTest(t, h, Child{Name: "a"})
+		r := runSupervisor(t, s)
+		first := nextStart(t, h)
+		t.Cleanup(func() { _ = syscall.Kill(-first.pid, syscall.SIGKILL) })
+		if code := r.stop(t); code != 0 {
+			t.Errorf("Run returned %d, want 0: the child itself ended within the grace", code)
+		}
+		gone(t, first)
+	})
+}
+
+// setPasswords puts every password variable in the test's own
+// environment, as PID 1 would have them before first start unsets them.
+func setPasswords(t *testing.T) {
+	t.Helper()
+	for _, name := range PasswordVariables {
+		t.Setenv(name, "pw-"+name)
+	}
+}
+
+// inheritEnvHelper sets the test's own environment so that a child that
+// inherits it runs as a helper printing its environment.
+func inheritEnvHelper(t *testing.T) {
+	t.Helper()
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv("HELPER_MODE", "env")
+	t.Setenv("GORACE", "atexit_sleep_ms=0")
+}
+
+// checkNoPasswords fails if env, as a child printed it, holds a password
+// variable, or does not look like the child's environment at all.
+func checkNoPasswords(t *testing.T, how string, env []byte) {
+	t.Helper()
+	if !strings.Contains(string(env), "GO_WANT_HELPER_PROCESS=1") {
+		t.Errorf("%s: the child printed no environment: %q", how, env)
+	}
+	for _, name := range PasswordVariables {
+		if strings.Contains(string(env), name+"=") || strings.Contains(string(env), "pw-"+name) {
+			t.Errorf("%s: the child got %s", how, name)
+		}
+	}
+}
+
+// TestStartNeverPassesPasswords: a child gets no password variable,
+// whether its Env names them or it inherits PID 1's environment.
+// Not parallel: it sets the test process's own environment.
+func TestStartNeverPassesPasswords(t *testing.T) {
+	setPasswords(t)
+	inheritEnvHelper(t)
+	t.Setenv("HELPER_OUT", "3")
+	reap.ensure()
+	for _, c := range []struct {
+		how string
+		env []string
+	}{
+		{"given", helperEnv("env", "HELPER_OUT=3", "CALIBRE_ADMIN_PASSWORD=pw-CALIBRE_ADMIN_PASSWORD")},
+		{"inherited", nil},
+	} {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		reap.begin()
+		p, err := startProcess(Child{Name: "a", Argv: helperArgv(), Env: c.env}, w)
+		_ = w.Close()
+		if err != nil {
+			reap.abandon()
+			t.Fatal(err)
+		}
+		reap.started()
+		ended := reap.claim(p.Pid)
+		env, err := io.ReadAll(r)
+		_ = r.Close()
+		<-ended
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkNoPasswords(t, c.how, env)
 	}
 }

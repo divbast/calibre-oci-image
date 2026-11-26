@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -60,14 +61,22 @@ func helperMain(mode string) int {
 		signal.Ignore(syscall.SIGTERM)
 		ready(f)
 		sleepForever()
+	case "wait-tree":
+		// Ends on SIGTERM, and leaves a second process in its group, which
+		// holds the ready pipe open too
+		term := make(chan os.Signal, 1)
+		signal.Notify(term, syscall.SIGTERM)
+		if !startLeaf(f) {
+			return 2
+		}
+		ready(f)
+		<-term
+		return code
 	case "ignore-term-tree":
 		// A second process in the child's group, holding the ready pipe
 		// open too, as calibre-server's conversion workers would
 		signal.Ignore(syscall.SIGTERM)
-		leaf := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestHelperProcess$") //nolint:gosec // G204: the test binary itself
-		leaf.Env = append(os.Environ(), "HELPER_MODE=ignore-term", "HELPER_READY=")
-		leaf.ExtraFiles = []*os.File{f}
-		if err := leaf.Start(); err != nil {
+		if !startLeaf(f) {
 			return 2
 		}
 		ready(f)
@@ -79,6 +88,28 @@ func helperMain(mode string) int {
 		return code
 	case "hang":
 		sleepForever()
+	case "env":
+		// Its environment, one variable to a line, on stdout, or on fd 3
+		// when HELPER_OUT says so
+		out := os.Stdout
+		if os.Getenv("HELPER_OUT") == "3" {
+			out = os.NewFile(3, "out")
+		}
+		if _, err := fmt.Fprintln(out, strings.Join(os.Environ(), "\n")); err != nil {
+			return 2
+		}
+		return 0
+	case "hold-stdout":
+		// Exits 0 with some output written, while a process it started
+		// holds stdout open for a while after
+		leaf := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestHelperProcess$") //nolint:gosec // G204: the test binary itself
+		leaf.Env = append(os.Environ(), "HELPER_MODE=exit-later", "HELPER_SLEEP_MS=2000")
+		leaf.Stdout = os.Stdout
+		if err := leaf.Start(); err != nil {
+			return 2
+		}
+		_, _ = fmt.Print("partial")
+		return 0
 	case "orphan":
 		// Starts a process that outlives it, and prints its PID
 		leaf := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestHelperProcess$") //nolint:gosec // G204: the test binary itself
@@ -89,10 +120,23 @@ func helperMain(mode string) int {
 		_, _ = fmt.Println(leaf.Process.Pid)
 		return 0
 	case "exit-later":
-		time.Sleep(100 * time.Millisecond)
+		ms, err := strconv.Atoi(os.Getenv("HELPER_SLEEP_MS"))
+		if err != nil {
+			ms = 100
+		}
+		time.Sleep(time.Duration(ms) * time.Millisecond)
 		return 0
 	}
 	return 2
+}
+
+// startLeaf starts a process in the helper's own group that ignores
+// SIGTERM and sleeps, holding f as its fd 3.
+func startLeaf(f *os.File) bool {
+	leaf := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestHelperProcess$") //nolint:gosec // G204: the test binary itself
+	leaf.Env = append(os.Environ(), "HELPER_MODE=ignore-term", "HELPER_READY=")
+	leaf.ExtraFiles = []*os.File{f}
+	return leaf.Start() == nil
 }
 
 // readyFile is the file descriptor HELPER_READY names, or nil. One value
