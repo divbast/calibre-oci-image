@@ -359,3 +359,35 @@ func TestLoginHeaderHoldBehindScriptName(t *testing.T) {
 		t.Fatalf("%d reads, want 2", rd.count())
 	}
 }
+
+func TestLoginHeaderHoldRoutedLikeCalibreWeb(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, script, target string
+		holds                bool
+	}{
+		{"prefix glued on", "/x", "/xadmin/ajaxconfig", true},
+		{"prefix with double slash", "/x", "/x//admin/ajaxconfig", true},
+		{"root prefix", "/", "/admin/ajaxconfig", true},
+		{"double slash", "", "//admin/ajaxconfig", true},
+		{"no prefix removed", "/x", "/y/admin/ajaxconfig", false},
+		{"dot segment", "", "/./admin/ajaxconfig", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			b := newBackend(t)
+			lh, rd := loaded(t, "X-User")
+			h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
+			hdr := http.Header{}
+			if tt.script != "" {
+				hdr["X-Script-Name"] = []string{tt.script}
+			}
+			do(h, trustedPeer, "POST", "http://calibre.test"+tt.target, hdr)
+			do(h, untrustedPeer, "GET", "http://calibre.test/", nil) // waits for a re-read
+			if got := rd.count() == 2; got != tt.holds {
+				t.Fatalf("%d reads for %s with X-Script-Name %q, hold = %v, want %v", rd.count(), tt.target, tt.script, got, tt.holds)
+			}
+		})
+	}
+}

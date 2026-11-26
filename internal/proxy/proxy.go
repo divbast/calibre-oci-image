@@ -125,18 +125,19 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.rp.ServeHTTP(sw, r)
 }
 
-// routedPath returns the path Calibre-Web routes: the request's path
-// without the X-Script-Name prefix, as Calibre-Web removes it. A source that
-// is not listed has that header removed, so its path stays as it is.
+// routedPath returns the path Calibre-Web routes. It starts from the decoded
+// path, removes the X-Script-Name prefix when the path starts with it, as
+// Calibre-Web does, and then replaces any leading slashes by one, as the
+// web framework does before it matches a route. A source that is not listed
+// has X-Script-Name removed, so its path keeps its prefix.
 func routedPath(r *http.Request, trusted bool) string {
 	path := r.URL.Path
-	if !trusted {
-		return path
+	if trusted {
+		if script := strings.Join(r.Header.Values("X-Script-Name"), ", "); script != "" {
+			path = strings.TrimPrefix(path, script)
+		}
 	}
-	if script := strings.Join(r.Header.Values("X-Script-Name"), ", "); script != "" {
-		return strings.TrimPrefix(path, script)
-	}
-	return path
+	return "/" + strings.TrimLeft(path, "/")
 }
 
 // changesSettings reports whether a request can change Calibre-Web's

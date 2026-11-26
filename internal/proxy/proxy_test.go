@@ -423,3 +423,41 @@ func TestRoutedPath(t *testing.T) {
 		t.Error("the app did not get X-Script-Name")
 	}
 }
+
+func TestRoutedPathLikeCalibreWeb(t *testing.T) {
+	t.Parallel()
+	b := newBackend(t)
+	h := New(Config{Target: b.target(), Trusted: trustedNet, BlockReconnect: true})
+	tests := []struct {
+		name    string
+		peer    string
+		script  string
+		target  string
+		blocked bool
+	}{
+		{"double slash", untrustedPeer, "", "//reconnect", true},
+		{"triple slash", untrustedPeer, "", "///reconnect", true},
+		{"encoded slash", untrustedPeer, "", "/%2Freconnect", true},
+		{"prefix glued on", trustedPeer, "/x", "/xreconnect", true},
+		{"prefix with slash", trustedPeer, "/x", "/x//reconnect", true},
+		{"root prefix", trustedPeer, "/", "/reconnect", true},
+		{"dot segment", untrustedPeer, "", "/./reconnect", false},
+		{"parent segment", untrustedPeer, "", "/a/../reconnect", false},
+		{"trailing slash", untrustedPeer, "", "/reconnect/", false},
+		{"semicolon", untrustedPeer, "", "/reconnect;x", false},
+		{"capital", untrustedPeer, "", "/Reconnect", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			hdr := http.Header{}
+			if tt.script != "" {
+				hdr["X-Script-Name"] = []string{tt.script}
+			}
+			got := do(h, tt.peer, "GET", "http://calibre.test"+tt.target, hdr).Code == 404
+			if got != tt.blocked {
+				t.Fatalf("%s blocked = %v, want %v", tt.target, got, tt.blocked)
+			}
+		})
+	}
+}
