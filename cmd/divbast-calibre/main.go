@@ -222,7 +222,8 @@ func firstStart(ctx context.Context, environ []string, run firststart.Runner, l 
 // writable checks, before first start looks inside them, that the image's
 // user can write /config, /books with its metadata.db, and each of
 // /config/calibre and /config/calibre-web that is there, with the files
-// the apps write in it.
+// the apps write in it. Either may be a symbolic link to a directory; a
+// link to nothing, or to anything else, is refused.
 func writable(l layout) error {
 	if err := firststart.Writable(l.config); err != nil {
 		return err
@@ -237,14 +238,18 @@ func writable(l layout) error {
 		{l.calibre(), []string{firststart.UsersFile, firststart.InternalPasswordFile}},
 		{l.calibreWeb(), []string{firststart.AppDB}},
 	} {
-		fi, err := os.Lstat(d.dir)
+		// Stat follows a symbolic link, as Calibre and Calibre-Web will
+		fi, err := os.Stat(d.dir)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
+			if target, lerr := os.Readlink(d.dir); lerr == nil {
+				return fmt.Errorf("%s is a symbolic link to %s, which is not there", d.dir, target)
+			}
 			continue
 		case err != nil:
 			return err
 		case !fi.IsDir():
-			return fmt.Errorf("%s is not a directory", d.dir)
+			return fmt.Errorf("%s is not a directory, or a symbolic link to one", d.dir)
 		}
 		if werr := firststart.Writable(d.dir, d.files...); werr != nil {
 			return werr

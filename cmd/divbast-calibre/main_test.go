@@ -368,6 +368,62 @@ func TestServeOneLine(t *testing.T) {
 	}
 }
 
+// TestConfigSymlinks is /config/calibre or /config/calibre-web as a
+// symbolic link: one to a directory is followed, as Calibre and
+// Calibre-Web follow it, and first start runs; one to nothing, or to a
+// file, stops the start before anything runs, naming the link.
+func TestConfigSymlinks(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"calibre", "calibre-web"} {
+		for _, tt := range []struct {
+			kind string
+			// target makes what the link points to, in elsewhere
+			target func(t *testing.T, elsewhere string) string
+			errHas string
+		}{
+			{kind: "to a directory", target: func(t *testing.T, elsewhere string) string {
+				t.Helper()
+				return mkdir(t, filepath.Join(elsewhere, "dir"))
+			}},
+			{kind: "to nothing", errHas: "is not there", target: func(_ *testing.T, elsewhere string) string {
+				return filepath.Join(elsewhere, "gone")
+			}},
+			{kind: "to a file", errHas: "not a directory", target: func(t *testing.T, elsewhere string) string {
+				t.Helper()
+				path := filepath.Join(elsewhere, "file")
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			}},
+		} {
+			t.Run(name+" "+tt.kind, func(t *testing.T) {
+				t.Parallel()
+				l := newLayout(t)
+				link := filepath.Join(l.config, name)
+				if err := os.Symlink(tt.target(t, t.TempDir()), link); err != nil {
+					t.Fatal(err)
+				}
+				h := &helpers{t: t}
+				environ := []string{"CALIBRE_ADMIN_PASSWORD=" + adminPW, "CALIBRE_WEB_ADMIN_PASSWORD=" + webPW}
+				err := firstStart(t.Context(), environ, h.run, l, new(bytes.Buffer))
+				if tt.errHas == "" {
+					if err != nil || len(h.calls) != 3 {
+						t.Errorf("firstStart() = %v after %q; want first start run through the link", err, h.argv0s())
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), link) || !strings.Contains(err.Error(), tt.errHas) {
+					t.Errorf("firstStart() = %v, want an error naming %s and saying %q", err, link, tt.errHas)
+				}
+				if len(h.calls) != 0 {
+					t.Errorf("first start ran %q", h.argv0s())
+				}
+			})
+		}
+	}
+}
+
 // TestLookup takes the first of a variable set twice, as Go's os.Getenv
 // and C's getenv do.
 func TestLookup(t *testing.T) {
