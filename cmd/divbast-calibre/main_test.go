@@ -359,7 +359,7 @@ func TestServeOneLine(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	environ := []string{"CALIBRE_ADMIN_PASSWORD=" + adminPW, "CALIBRE_WEB_ADMIN_PASSWORD=" + webPW}
-	if code := runServe(t.Context(), environ, run, newLayout(t), &stdout, &stderr); code != 1 {
+	if code := runServe(t.Context(), environ, run, newLayout(t), &stdout, &stderr, noApps(t)); code != 1 {
 		t.Errorf("runServe() = %d, want 1", code)
 	}
 	got := stderr.String()

@@ -2,8 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee>
 
 // Command divbast-calibre is the image's PID 1: it prepares and starts
-// Calibre's Content Server and Calibre-Web, and is the image's health
-// check, its version, and the calibredb that Calibre-Web runs.
+// Calibre's Content Server and Calibre-Web, serves them on ports 8080 and
+// 8083, and keeps the two in step. It is also the image's health check,
+// its version, and the calibredb that Calibre-Web runs.
 //
 // Usage:
 //
@@ -20,17 +21,25 @@
 // CALIBRE_ADMIN_PASSWORD_FILE and CALIBRE_WEB_ADMIN_PASSWORD_FILE name,
 // and are read only while an account is still to be made. Then serve
 // removes the four variables from its environment, so no app it starts
-// inherits them. Starting the two apps is not written yet: serve stops
-// there, with exit code 1.
+// inherits them.
+//
+// Then serve starts calibre-server on 127.0.0.1:18080 and Calibre-Web on
+// 127.0.0.1:18083, and starts again either one that ends. It serves the
+// Content Server on port 8080 and Calibre-Web on port 8083, on every
+// address, keeping forwarding headers only from the sources
+// TRUSTED_PROXIES lists. It watches the library's metadata.db, and after
+// each change one app makes, it reloads the other. It writes each app's
+// state to /tmp/divbast-calibre/state.json, for health. On SIGTERM or
+// SIGINT it stops both apps and exits.
 //
 // health prints nothing when both halves hold, and one "<check>: <reason>"
 // line for each that does not.
 //
 // Exit codes:
 //
-//	0  healthy, or the version printed
-//	1  a half of health did not hold, first start failed, or serve or
-//	   calibredb is not written yet
+//	0  healthy, the version printed, or serve stopped as asked
+//	1  a half of health did not hold; serve could not start, or an app
+//	   had to be killed as it stopped; or calibredb is not written yet
 //	2  the command line is wrong
 package main
 
@@ -41,15 +50,22 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/divbast/calibre-oci-image/internal/firststart"
 	"github.com/divbast/calibre-oci-image/internal/probe"
+	"github.com/divbast/calibre-oci-image/internal/proxy"
+	"github.com/divbast/calibre-oci-image/internal/reload"
+	"github.com/divbast/calibre-oci-image/internal/supervise"
 )
 
 // version is set at build time, with -ldflags "-X main.version=…": the
@@ -67,8 +83,34 @@ const (
 	webAdminVar = "CALIBRE_WEB_ADMIN_PASSWORD"
 )
 
-// passwordVariables is all four password variables.
-var passwordVariables = []string{adminVar, adminVar + "_FILE", webAdminVar, webAdminVar + "_FILE"}
+// trustedVar lists the sources whose forwarding headers are kept.
+const trustedVar = "TRUSTED_PROXIES"
+
+// Where the two apps listen, on loopback, and where serve writes their
+// state for health.
+const (
+	contentServerAddr = "127.0.0.1:18080"
+	calibreWebAddr    = "127.0.0.1:18083"
+	statePath         = "/tmp/divbast-calibre/state.json"
+)
+
+// The image's times.
+var (
+	superviseOptions = supervise.Options{Min: time.Second, Max: time.Minute, ResetAfter: 10 * time.Minute, Grace: 8 * time.Second}
+	reloadOptions    = reload.Options{Window: 10 * time.Second, Quiet: 5 * time.Second, Cap: 10 * time.Minute, RetryAfter: 10 * time.Second}
+)
+
+const (
+	// watchEvery is how often serve looks at metadata.db, and at an app's
+	// port after it starts.
+	watchEvery = time.Second
+	// loginTimeout is how long a read of Calibre-Web's login header
+	// setting may take.
+	loginTimeout = 10 * time.Second
+	// readHeaderTimeout is how long a client has to send a request's
+	// headers, as on every divbast server.
+	readHeaderTimeout = 5 * time.Second
+)
 
 // layout is where first start finds the config and the library.
 type layout struct {
@@ -127,18 +169,33 @@ func usage() {
 	os.Exit(2)
 }
 
-// serve runs first start in the image, until SIGTERM or SIGINT.
+// serve runs the image, until SIGTERM or SIGINT.
 func serve() int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	return runServe(ctx, os.Environ(), firststart.Exec, image, os.Stdout, os.Stderr)
+	return runServe(ctx, os.Environ(), firststart.Exec, image, os.Stdout, os.Stderr, startApps)
 }
 
-// runServe runs first start in l, with environ and run, then removes the
-// password variables from this process's environment. Any failure is one
-// line on stderr. Starting the two apps is not written yet.
-func runServe(ctx context.Context, environ []string, run firststart.Runner, l layout, stdout, stderr io.Writer) int {
+// settings is what serve starts the apps with.
+type settings struct {
+	environ []string // PID 1's environment, as serve began
+	trusted []netip.Prefix
+	l       layout
+	stderr  io.Writer
+}
+
+// runServe reads TRUSTED_PROXIES and runs first start in l, with environ
+// and run, then removes the password variables from this process's
+// environment, and runs apps. A failure before apps is one line on stderr.
+func runServe(ctx context.Context, environ []string, run firststart.Runner, l layout, stdout, stderr io.Writer,
+	apps func(context.Context, *settings) int,
+) int {
 	say(stdout, "Calibre %s, Calibre-Web %s", version, cwCommit)
+	trusted, err := proxy.ParseTrusted(lookup(environ)(trustedVar))
+	if err != nil {
+		say(stderr, "%v", err)
+		return 1
+	}
 	if err := firstStart(ctx, environ, run, l, stdout); err != nil {
 		say(stderr, "%v", err)
 		return 1
@@ -147,8 +204,271 @@ func runServe(ctx context.Context, environ []string, run firststart.Runner, l la
 		say(stderr, "%v", err)
 		return 1
 	}
-	say(stderr, "first start is done, but starting Calibre and Calibre-Web is not written yet")
-	return 1
+	return apps(ctx, &settings{environ: environ, trusted: trusted, l: l, stderr: stderr})
+}
+
+// startApps runs the two apps and their proxies, until ctx ends, in order:
+// the supervisor, Calibre-Web's login header setting, the state file, the
+// apps, the proxies, and the watch on the library. Its exit code is the
+// supervisor's, or 1 when it could not start or a proxy stopped serving.
+func startApps(ctx context.Context, s *settings) int {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	env := withoutPasswords(s.environ)
+	sup := supervise.New(children(s.l, env), superviseOptions, nil)
+
+	// From here on, every program PID 1 runs goes through the supervisor's
+	// Exec, whose reaper collects them all
+	login := proxy.NewLoginHeader(loginReader(sup.Exec, env, s.l), loginTimeout, time.Now)
+	if err := login.Load(ctx); err != nil {
+		say(s.stderr, "reading Calibre-Web's login header setting failed: %v", err)
+		return 1
+	}
+
+	apps := reload.New(reload.SystemClock(), &reloader{sup: sup, client: &http.Client{}, reconnect: "http://" + calibreWebAddr + "/reconnect"}, reloadOptions)
+	defer apps.Stop()
+	t := newTracker(ctx, statePath, apps, s.stderr)
+	if err := t.write(); err != nil {
+		say(s.stderr, "writing %s failed: %v", statePath, err)
+		return 1
+	}
+	sup.OnChange(t.change)
+	ran := make(chan int, 1)
+	go func() { ran <- sup.Run(ctx) }()
+
+	failed := make(chan struct{}, 2)
+	if err := serveProxies(ctx, s, apps, login, failed); err != nil {
+		say(s.stderr, "%v", err)
+		cancel()
+		<-ran
+		return 1
+	}
+	go reload.Watch(ctx, libraryFiles(s.l), watchEvery, apps.DBChanged)
+
+	code := 0
+	select {
+	case <-ctx.Done():
+	case <-failed:
+		code = 1
+		cancel()
+	}
+	return max(code, <-ran)
+}
+
+// children are the two apps, each with env as its whole environment.
+func children(l layout, env []string) []supervise.Child {
+	return []supervise.Child{
+		{
+			Name: reload.ContentServer.String(),
+			Argv: []string{
+				"/opt/calibre/calibre-server", "--listen-on", "127.0.0.1", "--port", "18080", "--enable-auth",
+				"--userdb", filepath.Join(l.calibre(), firststart.UsersFile), "--disable-use-bonjour", l.books,
+			},
+			Env: env,
+		},
+		{
+			Name: reload.CalibreWeb.String(),
+			Argv: []string{
+				firststart.Python, "-OO", "/app/calibre-web/cps.py",
+				"-p", filepath.Join(l.calibreWeb(), firststart.AppDB), "-g", filepath.Join(l.calibreWeb(), "gdrive.db"),
+				"-i", "127.0.0.1", "-r", "-o", "/dev/stdout",
+			},
+			Env: env,
+		},
+	}
+}
+
+// libraryFiles are the files the library changes: metadata.db, and its
+// journal and write-ahead log while SQLite writes.
+func libraryFiles(l layout) []string {
+	db := filepath.Join(l.books, firststart.MetadataDB)
+	return []string{db, db + "-journal", db + "-wal"}
+}
+
+// loginReader reads Calibre-Web's login header setting with run, which
+// runs Calibre-Web's helper with env.
+func loginReader(run firststart.Runner, env []string, l layout) func(context.Context) (string, error) {
+	argv := []string{firststart.Python, firststart.WebHelper, "get-login-header", filepath.Join(l.calibreWeb(), firststart.AppDB)}
+	return func(ctx context.Context) (string, error) {
+		out, err := run(ctx, argv, env, nil)
+		return strings.TrimSpace(string(out)), err
+	}
+}
+
+// serveProxies serves port 8080 for the Content Server and 8083 for
+// Calibre-Web, until ctx ends. A proxy that stops serving before then
+// sends to failed.
+func serveProxies(ctx context.Context, s *settings, apps events, login *proxy.LoginHeader, failed chan<- struct{}) error {
+	ports := []struct {
+		port int
+		app  reload.App
+		cfg  proxy.Config
+	}{
+		{8080, reload.ContentServer, proxy.Config{Login: login, StripLoginAlways: true}},
+		{8083, reload.CalibreWeb, proxy.Config{Login: login, BlockReconnect: true}},
+	}
+	servers := make([]*http.Server, 0, len(ports))
+	for _, p := range ports {
+		ln, err := proxy.Listen(ctx, p.port)
+		if err != nil {
+			for _, srv := range servers {
+				_ = srv.Close()
+			}
+			return fmt.Errorf("listening on port %d failed: %w", p.port, err)
+		}
+		addr := contentServerAddr
+		if p.app == reload.CalibreWeb {
+			addr = calibreWebAddr
+		}
+		p.cfg.Target = &url.URL{Scheme: "http", Host: addr}
+		p.cfg.Trusted = s.trusted
+		p.cfg.Hooks = hooks(apps, p.app, s.stderr)
+		srv := &http.Server{Handler: proxy.New(&p.cfg), ReadHeaderTimeout: readHeaderTimeout}
+		servers = append(servers, srv)
+		go func() {
+			if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+				say(s.stderr, "serving port %d failed: %v", p.port, err)
+				failed <- struct{}{}
+			}
+		}()
+	}
+	go func() {
+		<-ctx.Done()
+		for _, srv := range servers {
+			_ = srv.Close()
+		}
+	}()
+	return nil
+}
+
+// events is what the proxies tell the Coordinator, and ask it.
+type events interface {
+	RequestStarted(app reload.App, method, path string) (done func(status int))
+	Gate(app reload.App, method, path string) (deny bool, retryAfter time.Duration, reason string)
+	Answered(method, path string, status int, header http.Header, body []byte, whole bool)
+}
+
+// hooks joins app's proxy to the Coordinator: each request is counted, and
+// each failure the app gives is logged. On the Content Server's port,
+// requests are also gated, and the answers about conversions read.
+func hooks(apps events, app reload.App, logw io.Writer) proxy.Hooks {
+	h := proxy.Hooks{
+		Started: func(r *http.Request) func(int) { return apps.RequestStarted(app, r.Method, r.URL.Path) },
+		Failed: func(r *http.Request, err error) {
+			say(logw, "%s could not answer %s %s: %v", app, r.Method, logPath(r.URL.Path), err)
+		},
+	}
+	if app != reload.ContentServer {
+		return h
+	}
+	h.Gate = func(r *http.Request) (bool, time.Duration, string) { return apps.Gate(app, r.Method, r.URL.Path) }
+	h.Observe = func(r *http.Request) func(int, http.Header, []byte, bool) {
+		if !reload.Watched(r.Method, r.URL.Path) {
+			return nil
+		}
+		method, path := r.Method, r.URL.Path
+		return func(status int, header http.Header, body []byte, whole bool) {
+			apps.Answered(method, path, status, header, body, whole)
+		}
+	}
+	return h
+}
+
+// logPath is path as the log shows it: without the token a Kobo's
+// requests, or a remote login, carry as their second part.
+func logPath(path string) string {
+	parts := strings.Split(path, "/")
+	if len(parts) > 2 && (parts[1] == "kobo" || parts[1] == "verify") && parts[2] != "" {
+		parts[2] = "<token>"
+	}
+	return strings.Join(parts, "/")
+}
+
+// reloader reloads the two apps: Calibre-Web through its /reconnect, and
+// calibre-server through the supervisor.
+type reloader struct {
+	sup       *supervise.Supervisor
+	client    *http.Client
+	reconnect string // Calibre-Web's /reconnect, on loopback
+}
+
+func (r *reloader) ReconnectCalibreWeb(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.reconnect, http.NoBody)
+	if err != nil {
+		return err
+	}
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close() // only the status matters
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s answered %s", r.reconnect, resp.Status)
+	}
+	return nil
+}
+
+func (r *reloader) RestartContentServer(context.Context) error {
+	return r.sup.Restart(reload.ContentServer.String())
+}
+
+// starts is what the tracker tells the Coordinator.
+type starts interface {
+	Started(app reload.App)
+	Accepting(app reload.App)
+}
+
+// tracker keeps the state file in step with the supervisor, and tells the
+// Coordinator of each app's start, and of when its port then first
+// accepts a connection.
+type tracker struct {
+	ctx    context.Context
+	path   string
+	apps   starts
+	logw   io.Writer
+	wait   func(ctx context.Context, addr string, every time.Duration) error
+	states map[string]supervise.State
+	polls  map[string]context.CancelFunc
+}
+
+func newTracker(ctx context.Context, path string, apps starts, logw io.Writer) *tracker {
+	return &tracker{
+		ctx: ctx, path: path, apps: apps, logw: logw, wait: reload.WaitAccepting,
+		states: map[string]supervise.State{reload.ContentServer.String(): {}, reload.CalibreWeb.String(): {}},
+		polls:  make(map[string]context.CancelFunc),
+	}
+}
+
+// write writes the state file.
+func (t *tracker) write() error {
+	return supervise.WriteState(t.path, t.states)
+}
+
+// change is the supervisor's OnChange function.
+func (t *tracker) change(name string, st supervise.State) {
+	prev := t.states[name]
+	t.states[name] = st
+	if err := t.write(); err != nil {
+		say(t.logw, "writing %s failed: %v", t.path, err)
+	}
+	if !st.Up || prev.Up {
+		return
+	}
+	app, addr := reload.ContentServer, contentServerAddr
+	if name == reload.CalibreWeb.String() {
+		app, addr = reload.CalibreWeb, calibreWebAddr
+	}
+	t.apps.Started(app)
+	if stop := t.polls[name]; stop != nil {
+		stop()
+	}
+	ctx, stop := context.WithCancel(t.ctx)
+	t.polls[name] = stop
+	go func() {
+		if t.wait(ctx, addr, watchEvery) == nil {
+			t.apps.Accepting(app)
+		}
+	}()
 }
 
 // calibredb is Calibre-Web's calibredb, which is not written yet.
@@ -309,7 +629,7 @@ func lookup(environ []string) func(string) string {
 func withoutPasswords(environ []string) []string {
 	return slices.DeleteFunc(slices.Clone(environ), func(e string) bool {
 		k, _, _ := strings.Cut(e, "=")
-		return slices.Contains(passwordVariables, k)
+		return slices.Contains(supervise.PasswordVariables[:], k)
 	})
 }
 
@@ -325,7 +645,7 @@ func withEnv(run firststart.Runner, base []string) firststart.Runner {
 // environment, which every app it starts inherits.
 func unsetPasswords() error {
 	var err error
-	for _, name := range passwordVariables {
+	for _, name := range supervise.PasswordVariables {
 		err = errors.Join(err, os.Unsetenv(name))
 	}
 	return err
