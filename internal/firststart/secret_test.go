@@ -122,6 +122,10 @@ func TestCheckPassword(t *testing.T) {
 		{value: "Abcdefg12", rule: "not a letter"},
 		{value: "Abcdefg1 ", rule: "not a letter"}, // a space is not special
 		{value: "12345678!", rule: "lower-case"},   // no letter at all: the first rule broken is named
+		// Calibre-Web's .{8,}$ takes no newline but a last one; first start
+		// takes none, since a login form cannot send one
+		{value: "Abcdefg1!\nx", rule: "line break"},
+		{value: "Abcdefg1!\n", rule: "line break"},
 	} {
 		t.Run(tt.value, func(t *testing.T) {
 			t.Parallel()
@@ -141,6 +145,46 @@ func TestCheckPassword(t *testing.T) {
 			}
 			if strings.Contains(msg, tt.value) || strings.Count(msg, "\n") != 0 {
 				t.Errorf("CheckPassword(%q) = %q, want one line without the password", tt.value, msg)
+			}
+		})
+	}
+}
+
+// TestCheckCalibrePassword refuses a character of each kind Calibre's
+// Content Server refuses in a password: control characters, invisible
+// formatting characters, and line and paragraph separators. Calibre's
+// fifth kind, lone surrogates, cannot be in UTF-8 text, which ReadSecret
+// refuses first.
+func TestCheckCalibrePassword(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, value string
+		refused     bool
+	}{
+		{name: "letters, digits and signs", value: "Pässwörd1!"},
+		{name: "a space", value: "Abc defg1!"},
+		{name: "a tab (Cc)", value: "Abcdefg1!\t", refused: true},
+		{name: "a NUL (Cc)", value: "Abcd\x00efg1!", refused: true},
+		{name: "DEL (Cc)", value: "Abcdefg1!\x7f", refused: true},
+		{name: "a zero-width space (Cf)", value: "Abcd\u200befg1!", refused: true},
+		{name: "a soft hyphen (Cf)", value: "Abcd\u00adefg1!", refused: true},
+		{name: "a line separator (Zl)", value: "Abcd\u2028efg1!", refused: true},
+		{name: "a paragraph separator (Zp)", value: "Abcd\u2029efg1!", refused: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := CheckCalibrePassword("PW_VAR", tt.value)
+			if !tt.refused {
+				if err != nil {
+					t.Errorf("CheckCalibrePassword() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "PW_VAR") || !strings.Contains(err.Error(), "Calibre") {
+				t.Errorf("CheckCalibrePassword() = %v, want an error naming PW_VAR and Calibre's rule", err)
+			}
+			if err != nil && strings.Contains(err.Error(), tt.value) {
+				t.Errorf("CheckCalibrePassword() = %q, which holds the password", err)
 			}
 		})
 	}

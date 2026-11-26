@@ -61,28 +61,40 @@ func CheckPassword(variable, value string) error {
 	if rule == "" {
 		return nil
 	}
-	return fmt.Errorf("%s: the password needs %s (both admin passwords must follow Calibre-Web's default password rules)", variable, rule)
+	return fmt.Errorf("%s: the password %s (both admin passwords must follow Calibre-Web's default password rules)", variable, rule)
 }
 
 // brokenRule returns the first of Calibre-Web's default password rules
-// that pw breaks, or "" when it breaks none. Each mirrors a part of the
-// regular expression Calibre-Web builds: .{8,}, \d, \p{Ll}, \p{Lu},
-// \p{Letter} and [^\p{Letter}\s0-9].
+// that pw breaks, or "" when it breaks none. Calibre-Web builds them as one
+// regular expression, ^(?=.{8,}$)(?=.*?\d)(?=.*?[\p{Ll}])(?=.*?[\p{Lu}])
+// (?=.*?[\p{Letter}])(?=.*?[^\p{Letter}\s0-9]), and this mirrors it so:
+//
+//   - its . matches no newline, so its length rule refuses one anywhere
+//     but at the very end; this refuses that last one too, which no login
+//     form can send;
+//   - the length is counted in Unicode code points, as Python counts it;
+//   - \d is any Unicode decimal digit (Nd), and \p{Ll}, \p{Lu} and
+//     \p{Letter} are their Unicode categories, by Go's Unicode tables,
+//     whose Unicode version may differ from Calibre-Web's Python's;
+//   - \s is white space as Go's unicode.IsSpace has it, which may differ
+//     from Python's regex module in a few rare characters.
 func brokenRule(pw string) string {
 	switch {
+	case strings.Contains(pw, "\n"):
+		return "must not hold a line break"
 	case utf8.RuneCountInString(pw) < 8:
-		return "at least 8 characters"
+		return "needs at least 8 characters"
 	case !strings.ContainsFunc(pw, unicode.IsDigit):
-		return "at least one digit"
+		return "needs at least one digit"
 	case !strings.ContainsFunc(pw, unicode.IsLower):
-		return "at least one lower-case letter"
+		return "needs at least one lower-case letter"
 	case !strings.ContainsFunc(pw, unicode.IsUpper):
-		return "at least one upper-case letter"
+		return "needs at least one upper-case letter"
 	case !strings.ContainsFunc(pw, unicode.IsLetter):
 		// Kept as Calibre-Web has it, though the two rules above imply it
-		return "at least one letter"
+		return "needs at least one letter"
 	case !strings.ContainsFunc(pw, special):
-		return "at least one character that is not a letter, a space or a digit 0-9, such as ! or #"
+		return "needs at least one character that is not a letter, a space or a digit 0-9, such as ! or #"
 	}
 	return ""
 }
@@ -91,4 +103,19 @@ func brokenRule(pw string) string {
 // not a letter, not white space, and not one of the digits 0-9.
 func special(r rune) bool {
 	return !unicode.IsLetter(r) && !unicode.IsSpace(r) && (r < '0' || r > '9')
+}
+
+// CheckCalibrePassword refuses a password the Content Server would refuse
+// once first start had written the library: one that holds a control
+// character (Cc), an invisible formatting character (Cf), a lone surrogate
+// (Cs), or a line or paragraph separator (Zl, Zp), the categories
+// Calibre's validate_password refuses, by Go's Unicode tables. The error
+// is one line that names variable, and never the password.
+func CheckCalibrePassword(variable, value string) error {
+	if strings.ContainsFunc(value, func(r rune) bool {
+		return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Cs, unicode.Zl, unicode.Zp)
+	}) {
+		return fmt.Errorf("%s: the password must not hold a control character, a line break or an invisible formatting character, which Calibre's Content Server refuses", variable)
+	}
+	return nil
 }

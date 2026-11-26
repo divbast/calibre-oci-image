@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/divbast/calibre-oci-image/internal/firststart"
 )
 
 // The password variables, all four.
@@ -124,7 +126,7 @@ func TestServeOrder(t *testing.T) {
 					}
 				}
 				if !slices.Contains(c.env, "PATH=/usr/bin") {
-					t.Errorf("%s ran with %q, want PID 1's environment but the passwords", c.argv[0], c.env)
+					t.Errorf("%s ran without PATH=/usr/bin, want PID 1's environment but the passwords", c.argv[0])
 				}
 				for _, a := range c.argv {
 					if strings.Contains(a, adminPW) || strings.Contains(a, webPW) {
@@ -172,6 +174,9 @@ func TestServeOrderStops(t *testing.T) {
 		},
 		{name: "a weak admin password", environ: []string{"CALIBRE_ADMIN_PASSWORD=weakweak", "CALIBRE_WEB_ADMIN_PASSWORD=" + webPW}, errHas: []string{"CALIBRE_ADMIN_PASSWORD", "digit"}},
 		{name: "a weak Calibre-Web password", environ: []string{"CALIBRE_ADMIN_PASSWORD=" + adminPW, "CALIBRE_WEB_ADMIN_PASSWORD=Weakweak1"}, errHas: []string{"CALIBRE_WEB_ADMIN_PASSWORD", "not a letter"}},
+		// What the apps would refuse once first start had written the library
+		{name: "a tab in admin's password", environ: []string{"CALIBRE_ADMIN_PASSWORD=Calibre-Adm1n!\t", "CALIBRE_WEB_ADMIN_PASSWORD=" + webPW}, errHas: []string{"CALIBRE_ADMIN_PASSWORD", "control character"}},
+		{name: "a newline in Calibre-Web's password", environ: []string{"CALIBRE_ADMIN_PASSWORD=" + adminPW, "CALIBRE_WEB_ADMIN_PASSWORD=W3b-Admin-pass!\nx"}, errHas: []string{"CALIBRE_WEB_ADMIN_PASSWORD", "line break"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -250,33 +255,129 @@ func TestServeOrderHelperFails(t *testing.T) {
 // TestRefusesUnwritable is /config or /books that uid 65532 cannot write,
 // as a library from a desktop Calibre owned by uid 1000 is: the start
 // stops before it reads a password or runs anything, naming the directory
-// and saying how to give it to the user.
+// and saying how to give it to the user. A directory the test makes
+// read-only, or a file of mode 0444, stands in for one another uid owns,
+// and a config directory of mode 0000 for one of mode 0700 another uid
+// owns.
 func TestRefusesUnwritable(t *testing.T) {
 	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root writes past every mode")
 	}
-	for _, which := range []string{"config", "books"} {
-		t.Run(which, func(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		// lock makes l unwritable and returns the path the error names
+		lock func(t *testing.T, l layout) string
+	}{
+		{name: "/config", lock: func(t *testing.T, l layout) string { t.Helper(); return chmod(t, l.config, 0o500) }},
+		{name: "/books", lock: func(t *testing.T, l layout) string { t.Helper(); return chmod(t, l.books, 0o500) }},
+		{name: "metadata.db", lock: func(t *testing.T, l layout) string {
+			t.Helper()
+			return readOnlyFile(t, filepath.Join(l.books, "metadata.db"))
+		}},
+		{name: "/config/calibre", lock: func(t *testing.T, l layout) string {
+			t.Helper()
+			return chmod(t, mkdir(t, filepath.Join(l.config, "calibre")), 0o000)
+		}},
+		{name: "/config/calibre-web", lock: func(t *testing.T, l layout) string {
+			t.Helper()
+			return chmod(t, mkdir(t, filepath.Join(l.config, "calibre-web")), 0o000)
+		}},
+		{name: "users.sqlite", lock: func(t *testing.T, l layout) string {
+			t.Helper()
+			return readOnlyFile(t, filepath.Join(mkdir(t, filepath.Join(l.config, "calibre")), "users.sqlite"))
+		}},
+		{name: "internal-password", lock: func(t *testing.T, l layout) string {
+			t.Helper()
+			return readOnlyFile(t, filepath.Join(mkdir(t, filepath.Join(l.config, "calibre")), "internal-password"))
+		}},
+		{name: "app.db", lock: func(t *testing.T, l layout) string {
+			t.Helper()
+			return readOnlyFile(t, filepath.Join(mkdir(t, filepath.Join(l.config, "calibre-web")), "app.db"))
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			l := newLayout(t)
-			dir := l.config
-			if which == "books" {
-				dir = l.books
-			}
-			if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // G302: a directory the test makes read-only
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // G302: so the test's cleanup can remove it
+			path := tt.lock(t, l)
 			h := &helpers{t: t}
-			err := firstStart(t.Context(), nil, h.run, l, new(bytes.Buffer))
-			if err == nil || !strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), "chown -R") {
-				t.Errorf("firstStart() = %v, want an error naming %s and saying chown -R", err, dir)
+			environ := []string{"CALIBRE_ADMIN_PASSWORD=" + adminPW, "CALIBRE_WEB_ADMIN_PASSWORD=" + webPW}
+			err := firstStart(t.Context(), environ, h.run, l, new(bytes.Buffer))
+			if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "chown -R") {
+				t.Errorf("firstStart() = %v, want an error naming %s and saying chown -R", err, path)
+			}
+			if err != nil && strings.Contains(err.Error(), "cannot tell") {
+				t.Errorf("firstStart() = %v, want the chown hint, not that it cannot look", err)
 			}
 			if len(h.calls) != 0 {
 				t.Errorf("first start ran %q", h.argv0s())
 			}
 		})
+	}
+}
+
+// chmod sets path's mode until the test ends, and returns path.
+func chmod(t *testing.T, path string, mode os.FileMode) string {
+	t.Helper()
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o700) }) //nolint:gosec // G302: so the test's cleanup can remove it
+	return path
+}
+
+// mkdir makes the directory path, mode 0700, and returns it.
+func mkdir(t *testing.T, path string) string {
+	t.Helper()
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// readOnlyFile makes the file path, mode 0444, and returns it.
+func readOnlyFile(t *testing.T, path string) string {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("theirs"), 0o444); err != nil { //nolint:gosec // G306: a file the test makes read-only
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestServeOneLine is a helper that fails with many lines on stderr, as a
+// traceback is: serve writes exactly one line to stderr, ending with the
+// helper's last line, and none of the others.
+func TestServeOneLine(t *testing.T) {
+	t.Parallel()
+	script := filepath.Join(t.TempDir(), "helper")
+	body := "#!/bin/sh\nfor i in $(seq 1 500); do echo \"traceback line $i\" >&2; done\necho 'helper: the last line' >&2\necho >&2\nexit 1\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil { //nolint:gosec // G306: the test's own script, which it runs
+		t.Fatal(err)
+	}
+	run := func(ctx context.Context, _, env []string, stdin []byte) ([]byte, error) {
+		return firststart.Exec(ctx, []string{script}, env, stdin)
+	}
+	var stdout, stderr bytes.Buffer
+	environ := []string{"CALIBRE_ADMIN_PASSWORD=" + adminPW, "CALIBRE_WEB_ADMIN_PASSWORD=" + webPW}
+	if code := runServe(t.Context(), environ, run, newLayout(t), &stdout, &stderr); code != 1 {
+		t.Errorf("runServe() = %d, want 1", code)
+	}
+	got := stderr.String()
+	if strings.Count(got, "\n") != 1 || !strings.HasSuffix(got, "helper: the last line\n") || strings.Contains(got, "traceback line") {
+		t.Errorf("stderr = %q, want one line ending with the helper's last line", got)
+	}
+}
+
+// TestLookup takes the first of a variable set twice, as Go's os.Getenv
+// and C's getenv do.
+func TestLookup(t *testing.T) {
+	t.Parallel()
+	env := lookup([]string{"A=first", "B=b", "A=second"})
+	if got := env("A"); got != "first" {
+		t.Errorf("lookup(A) = %q, want the first", got)
+	}
+	if got := env("C"); got != "" {
+		t.Errorf("lookup(C) = %q, want none", got)
 	}
 }
 
@@ -292,8 +393,8 @@ func TestUnsetPasswords(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range passwordNames {
-		if v, ok := os.LookupEnv(name); ok {
-			t.Errorf("%s = %q after unsetPasswords(), want it unset", name, v)
+		if _, ok := os.LookupEnv(name); ok {
+			t.Errorf("%s is set after unsetPasswords(), want it unset", name)
 		}
 	}
 	if os.Getenv("DIVBAST_TEST_KEPT") != "kept" {

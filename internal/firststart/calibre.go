@@ -45,6 +45,9 @@ type user struct {
 	Name     string `json:"name"`
 	Password string `json:"password"`
 	Readonly bool   `json:"readonly"`
+	// ChangePasswordViaHTTP lets the user change its own password through
+	// the Content Server's /users/change-pw
+	ChangePasswordViaHTTP bool `json:"allow_change_password_via_http"`
 }
 
 // EnsureCalibreUsers creates the Content Server's user database in dir,
@@ -52,9 +55,13 @@ type user struct {
 // It holds admin, with adminPW and write access, and the read-only
 // internal user, with a password of 32 bytes from random, written as
 // base64url to internal-password, mode 0600, before the database is
-// made. calibre_users.py makes the database, under Calibre's own code,
-// reading every password from stdin. When anything fails, it leaves
-// neither file, so the next start tries again.
+// made. admin may change its own password over HTTP, as Calibre's default
+// is; the internal user, the image's own account, may not.
+// calibre_users.py makes the database, under Calibre's own code, reading
+// every password from stdin. When anything fails before users.sqlite is
+// in place, it leaves neither file, so the next start tries again. Once
+// users.sqlite is in place, the password file stays with it, even when
+// the directory then fails to sync.
 func EnsureCalibreUsers(ctx context.Context, run Runner, dir, adminPW string, random io.Reader) (bool, error) {
 	path := filepath.Join(dir, UsersFile)
 	if present, err := exists(path); err != nil || present {
@@ -81,14 +88,18 @@ func EnsureCalibreUsers(ctx context.Context, run Runner, dir, adminPW string, ra
 	stdin, err := json.Marshal(usersRequest{
 		Userdb: tmp,
 		Users: []user{
-			{Name: AdminUser, Password: adminPW, Readonly: false},
-			{Name: InternalUser, Password: internal, Readonly: true},
+			{Name: AdminUser, Password: adminPW, Readonly: false, ChangePasswordViaHTTP: true},
+			{Name: InternalUser, Password: internal, Readonly: true, ChangePasswordViaHTTP: false},
 		},
 	})
+	placed := false
 	if err == nil {
-		err = createDatabase(ctx, run, []string{CalibreDebug, "-e", UsersHelper}, stdin, tmp, path)
+		placed, err = createDatabase(ctx, run, []string{CalibreDebug, "-e", UsersHelper}, stdin, tmp, path)
 	}
-	if err != nil {
+	switch {
+	case err != nil && placed:
+		return true, fmt.Errorf("created the Content Server's users in %s, but could not make them durable: %w", dir, err)
+	case err != nil:
 		return false, errors.Join(fmt.Errorf("could not create the Content Server's users in %s: %w", dir, err), os.Remove(pwFile))
 	}
 	return true, nil

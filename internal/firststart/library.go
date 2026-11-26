@@ -9,14 +9,18 @@ import (
 	"path/filepath"
 )
 
-// Calibredb is Calibre's own calibredb, in the bundle.
-const Calibredb = "/opt/calibre/calibredb"
+const (
+	// Calibredb is Calibre's own calibredb, in the bundle.
+	Calibredb = "/opt/calibre/calibredb"
+	// MetadataDB is the library's database, in /books.
+	MetadataDB = "metadata.db"
+)
 
 // EnsureLibrary creates an empty Calibre library in books when books holds
 // no metadata.db, and reports whether it created one. calibredb creates a
 // library when the one it is asked to list is not there.
 func EnsureLibrary(ctx context.Context, run Runner, books string) (bool, error) {
-	db := filepath.Join(books, "metadata.db")
+	db := filepath.Join(books, MetadataDB)
 	if present, err := exists(db); err != nil || present {
 		return false, err
 	}

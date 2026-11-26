@@ -6,6 +6,7 @@ package firststart
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -37,6 +38,40 @@ func TestWritable(t *testing.T) {
 	}
 	if err != nil && strings.Contains(err.Error(), "\n") {
 		t.Errorf("Writable() = %q, want one line", err)
+	}
+}
+
+// TestWritableFiles opens each file named that is there for appending, as
+// the app will write it, and writes nothing to it: one the user cannot
+// write is refused, naming it and saying how to give it to the user; one
+// that is not there yet is no error. A file of mode 0444 stands in for
+// one another uid owns.
+func TestWritableFiles(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root writes past every mode")
+	}
+	dir := t.TempDir()
+	ok := filepath.Join(dir, "metadata.db")
+	if err := os.WriteFile(ok, []byte("library"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Writable(dir, "metadata.db", "missing.db"); err != nil {
+		t.Errorf("Writable() with a writable file and a missing one = %v", err)
+	}
+	if data, err := os.ReadFile(ok); err != nil || string(data) != "library" { //nolint:gosec // G304: the test's own temporary file
+		t.Errorf("Writable() left the file holding %q, %v; want it unchanged", data, err)
+	}
+	theirs := filepath.Join(dir, "users.sqlite")
+	if err := os.WriteFile(theirs, []byte("theirs"), 0o444); err != nil { //nolint:gosec // G306: a file the test makes read-only
+		t.Fatal(err)
+	}
+	err := Writable(dir, "metadata.db", "users.sqlite")
+	if err == nil || !strings.Contains(err.Error(), theirs) || !strings.Contains(err.Error(), "chown -R") {
+		t.Errorf("Writable() with a read-only file = %v, want an error naming it and saying chown -R", err)
+	}
+	if names := entries(t, dir); !slices.Equal(names, []string{"metadata.db", "users.sqlite"}) {
+		t.Errorf("Writable() left %q", names)
 	}
 }
 

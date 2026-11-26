@@ -26,36 +26,38 @@ func exists(path string) (bool, error) {
 }
 
 // createDatabase has argv, given stdin, create the SQLite database tmp,
-// then renames tmp to final, so final appears only once it is whole.
-// Whatever is at tmp first, its journals too, is left from a start that
-// stopped, and is removed; and so is what the command leaves at tmp when
-// it fails.
-func createDatabase(ctx context.Context, run Runner, argv []string, stdin []byte, tmp, final string) error {
-	if err := removeDatabase(tmp); err != nil {
-		return err
+// then renames tmp to final, so final appears only once it is whole, and
+// reports whether final is in place. Whatever is at tmp first, its
+// journals too, is left from a start that stopped, and is removed; and so
+// is what the command leaves at tmp when it fails. An error with final in
+// place is the directory failing to sync after the rename.
+func createDatabase(ctx context.Context, run Runner, argv []string, stdin []byte, tmp, final string) (placed bool, err error) {
+	if rerr := removeDatabase(tmp); rerr != nil {
+		return false, rerr
 	}
-	if err := placeDatabase(ctx, run, argv, stdin, tmp, final); err != nil {
-		return errors.Join(err, removeDatabase(tmp))
+	placed, err = placeDatabase(ctx, run, argv, stdin, tmp, final)
+	if err != nil && !placed {
+		err = errors.Join(err, removeDatabase(tmp))
 	}
-	return nil
+	return placed, err
 }
 
 // placeDatabase is createDatabase's run and rename.
-func placeDatabase(ctx context.Context, run Runner, argv []string, stdin []byte, tmp, final string) error {
-	if _, err := run(ctx, argv, nil, stdin); err != nil {
-		return err
+func placeDatabase(ctx context.Context, run Runner, argv []string, stdin []byte, tmp, final string) (placed bool, err error) {
+	if _, rerr := run(ctx, argv, nil, stdin); rerr != nil {
+		return false, rerr
 	}
 	made, err := exists(tmp)
 	switch {
 	case err != nil:
-		return err
+		return false, err
 	case !made:
-		return fmt.Errorf("%s exited 0, but created no %s", argv[0], tmp)
+		return false, fmt.Errorf("%s exited 0, but created no %s", argv[0], tmp)
 	}
 	if rerr := os.Rename(tmp, final); rerr != nil {
-		return rerr
+		return false, rerr
 	}
-	return syncDir(filepath.Dir(final))
+	return true, syncDir(filepath.Dir(final))
 }
 
 // removeDatabase removes the SQLite database path and its journals,

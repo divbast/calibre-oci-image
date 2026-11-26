@@ -19,9 +19,10 @@ import (
 type sentUsers struct {
 	Userdb string `json:"userdb"`
 	Users  []struct {
-		Name     string `json:"name"`
-		Password string `json:"password"`
-		Readonly bool   `json:"readonly"`
+		Name                  string `json:"name"`
+		Password              string `json:"password"`
+		Readonly              bool   `json:"readonly"`
+		ChangePasswordViaHTTP *bool  `json:"allow_change_password_via_http"`
 	} `json:"users"`
 }
 
@@ -77,14 +78,19 @@ func TestEnsureCalibreUsers(t *testing.T) {
 		t.Fatal(uerr)
 	}
 	type user = struct {
-		name, password string
-		readonly       bool
+		name, password            string
+		readonly, changePWViaHTTP bool
 	}
 	got := make([]user, 0, len(req.Users))
 	for _, u := range req.Users {
-		got = append(got, user{u.Name, u.Password, u.Readonly})
+		if u.ChangePasswordViaHTTP == nil {
+			t.Errorf("stdin's user %s does not say whether it may change its password over HTTP", u.Name)
+			continue
+		}
+		got = append(got, user{u.Name, u.Password, u.Readonly, *u.ChangePasswordViaHTTP})
 	}
-	if wantUsers := []user{{"admin", adminPW, false}, {"calibre-web", internal, true}}; !slices.Equal(got, wantUsers) {
+	// admin keeps Calibre's default; the image's own account may not change its password
+	if wantUsers := []user{{"admin", adminPW, false, true}, {"calibre-web", internal, true, false}}; !slices.Equal(got, wantUsers) {
 		t.Errorf("stdin's users = %+v, want %+v", got, wantUsers)
 	}
 
@@ -187,5 +193,39 @@ func TestEnsureCalibreUsersNoRandom(t *testing.T) {
 	created, err := EnsureCalibreUsers(t.Context(), r.run, dir, "Adm1n-pass!", bytes.NewReader(make([]byte, 7)))
 	if err == nil || created || len(r.calls) != 0 || len(entries(t, dir)) != 0 {
 		t.Errorf("EnsureCalibreUsers() with 7 random bytes = %t, %v after %d runs; want an error, nothing run or written", created, err, len(r.calls))
+	}
+}
+
+// TestEnsureCalibreUsersKeepsPassword is users.sqlite renamed into place,
+// then the directory failing to sync: the start stops, but the password
+// file stays, since users.sqlite now holds that password and the next
+// start will not make either again.
+func TestEnsureCalibreUsersKeepsPassword(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root opens past every mode")
+	}
+	dir := t.TempDir()
+	sync := fakeUsers(t, dir)
+	r := &recorder{do: func(c call) ([]byte, error) {
+		out, err := sync(c)
+		// Write and search, but no read: the rename works, and opening
+		// the directory to sync it fails
+		if cerr := os.Chmod(dir, 0o300); cerr != nil { //nolint:gosec // G302: a directory the test makes unreadable
+			t.Fatal(cerr)
+		}
+		return out, err
+	}}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // G302: so the test's cleanup can remove it
+	created, err := EnsureCalibreUsers(t.Context(), r.run, dir, "Adm1n-pass!", bytes.NewReader(make([]byte, 32)))
+	if cerr := os.Chmod(dir, 0o700); cerr != nil { //nolint:gosec // G302: the test reads the directory again
+		t.Fatal(cerr)
+	}
+	if err == nil {
+		t.Errorf("EnsureCalibreUsers() = %t, nil; want the failed sync reported", created)
+	}
+	names := entries(t, dir)
+	if slices.Contains(names, "users.sqlite") && !slices.Contains(names, "internal-password") {
+		t.Errorf("the directory holds %q: users.sqlite without the internal user's password", names)
 	}
 }

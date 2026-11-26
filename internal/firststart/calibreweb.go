@@ -64,10 +64,14 @@ func EnsureCalibreWeb(ctx context.Context, run Runner, dir, adminPW string, s *C
 	}
 	tmp := filepath.Join(dir, "."+AppDB+".new")
 	stdin, err := json.Marshal(webRequest{Appdb: tmp, Password: adminPW, Settings: s}) //nolint:gosec // G117: the password goes to the helper on its stdin, which is the point
+	placed := false
 	if err == nil {
-		err = createDatabase(ctx, run, []string{Python, WebHelper, "init"}, stdin, tmp, path)
+		placed, err = createDatabase(ctx, run, []string{Python, WebHelper, "init"}, stdin, tmp, path)
 	}
-	if err != nil {
+	switch {
+	case err != nil && placed:
+		return true, fmt.Errorf("wrote Calibre-Web's first settings in %s, but could not make them durable: %w", dir, err)
+	case err != nil:
 		return false, fmt.Errorf("could not write Calibre-Web's first settings in %s: %w", dir, err)
 	}
 	return true, nil

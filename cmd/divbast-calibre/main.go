@@ -10,7 +10,7 @@
 //	divbast-calibre serve      first start, then the two apps
 //	divbast-calibre health     check the page and /healthz, both on :8080
 //	divbast-calibre version    print the version
-//	divbast-calibre calibredb  the calibredb Calibre-Web runs, as is divbast-calibre run by a link named calibredb
+//	divbast-calibre calibredb  run calibredb for Calibre-Web; a link named calibredb does the same
 //
 // serve's first start makes what is not there yet, and changes nothing
 // that is: an empty Calibre library in /books; the Content Server's users
@@ -127,21 +127,27 @@ func usage() {
 	os.Exit(2)
 }
 
-// serve runs first start, then removes the password variables from the
-// environment. Starting the two apps is not written yet.
+// serve runs first start in the image, until SIGTERM or SIGINT.
 func serve() int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	say(os.Stdout, "Calibre %s, Calibre-Web %s", version, cwCommit)
-	if err := firstStart(ctx, os.Environ(), firststart.Exec, image, os.Stdout); err != nil {
-		say(os.Stderr, "%v", err)
+	return runServe(ctx, os.Environ(), firststart.Exec, image, os.Stdout, os.Stderr)
+}
+
+// runServe runs first start in l, with environ and run, then removes the
+// password variables from this process's environment. Any failure is one
+// line on stderr. Starting the two apps is not written yet.
+func runServe(ctx context.Context, environ []string, run firststart.Runner, l layout, stdout, stderr io.Writer) int {
+	say(stdout, "Calibre %s, Calibre-Web %s", version, cwCommit)
+	if err := firstStart(ctx, environ, run, l, stdout); err != nil {
+		say(stderr, "%v", err)
 		return 1
 	}
 	if err := unsetPasswords(); err != nil {
-		say(os.Stderr, "%v", err)
+		say(stderr, "%v", err)
 		return 1
 	}
-	say(os.Stderr, "first start is done, but starting Calibre and Calibre-Web is not written yet")
+	say(stderr, "first start is done, but starting Calibre and Calibre-Web is not written yet")
 	return 1
 }
 
@@ -154,7 +160,9 @@ func calibredb() int {
 // firstStart makes what Calibre and Calibre-Web need before they first
 // start, in l, and what is there already it leaves as it is. In order:
 //
-//   - /config and /books must be writable;
+//   - /config and /books must be writable, and so must /config/calibre
+//     and /config/calibre-web where they are there already, with the
+//     files the apps write in each;
 //   - each admin password is read and checked, from environ, while its
 //     account is still to be made;
 //   - /config/calibre and /config/calibre-web are made, mode 0700;
@@ -167,12 +175,13 @@ func calibredb() int {
 // each thing it makes, and stops at the first error, which it returns.
 func firstStart(ctx context.Context, environ []string, run firststart.Runner, l layout, stdout io.Writer) error {
 	env := lookup(environ)
-	for _, dir := range []string{l.config, l.books} {
-		if err := firststart.Writable(dir); err != nil {
-			return err
-		}
+	if err := writable(l); err != nil {
+		return err
 	}
 	adminPW, err := password(env, adminVar, filepath.Join(l.calibre(), firststart.UsersFile))
+	if err == nil && adminPW != "" {
+		err = firststart.CheckCalibrePassword(source(env, adminVar), adminPW)
+	}
 	if err != nil {
 		return err
 	}
@@ -210,10 +219,46 @@ func firstStart(ctx context.Context, environ []string, run firststart.Runner, l 
 	return nil
 }
 
-// password returns the admin password the variable name gives, checked
-// against Calibre-Web's default password rules, when accounts, the file
-// that holds the account, is not there yet. When it is there, the account
-// is made, and password reads nothing and returns "".
+// writable checks, before first start looks inside them, that the image's
+// user can write /config, /books with its metadata.db, and each of
+// /config/calibre and /config/calibre-web that is there, with the files
+// the apps write in it.
+func writable(l layout) error {
+	if err := firststart.Writable(l.config); err != nil {
+		return err
+	}
+	if err := firststart.Writable(l.books, firststart.MetadataDB); err != nil {
+		return err
+	}
+	for _, d := range []struct {
+		dir   string
+		files []string
+	}{
+		{l.calibre(), []string{firststart.UsersFile, firststart.InternalPasswordFile}},
+		{l.calibreWeb(), []string{firststart.AppDB}},
+	} {
+		fi, err := os.Lstat(d.dir)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			continue
+		case err != nil:
+			return err
+		case !fi.IsDir():
+			return fmt.Errorf("%s is not a directory", d.dir)
+		}
+		if werr := firststart.Writable(d.dir, d.files...); werr != nil {
+			return werr
+		}
+	}
+	return nil
+}
+
+// password reads an admin password, but only when its account is still to
+// be made: name is the variable that holds the password, or names, with
+// _FILE after it, the file that does, and accounts is the file that holds
+// the account once it is made. The password must follow Calibre-Web's
+// default password rules. When accounts is there already, password reads
+// nothing and returns "".
 func password(env func(string) string, name, accounts string) (string, error) {
 	_, err := os.Lstat(accounts)
 	switch {
@@ -226,21 +271,27 @@ func password(env func(string) string, name, accounts string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	source := name
-	if env(name+"_FILE") != "" {
-		source = name + "_FILE"
-	}
-	if err := firststart.CheckPassword(source, pw); err != nil {
+	if err := firststart.CheckPassword(source(env, name), pw); err != nil {
 		return "", err
 	}
 	return pw, nil
 }
 
-// lookup returns a function that looks a variable up in environ, the last
-// setting winning, as getenv does.
+// source is the variable a password came from: name, or name_FILE when
+// that is set.
+func source(env func(string) string, name string) string {
+	if env(name+"_FILE") != "" {
+		return name + "_FILE"
+	}
+	return name
+}
+
+// lookup returns a function that looks a variable up in environ. A
+// variable set twice gives its first value, as Go's os.Getenv and C's
+// getenv give it.
 func lookup(environ []string) func(string) string {
 	return func(key string) string {
-		for _, e := range slices.Backward(environ) {
+		for _, e := range environ {
 			if k, v, ok := strings.Cut(e, "="); ok && k == key {
 				return v
 			}

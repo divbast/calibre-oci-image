@@ -30,3 +30,27 @@ func TestExec(t *testing.T) {
 		t.Errorf("Exec(false) = %v, want an error naming the command", err)
 	}
 }
+
+// TestExecOneLine is a command that fails after writing more to stderr
+// than Exec keeps: the error is one line, ending with the command's last
+// line that is not empty, and holds none of the lines before it.
+func TestExecOneLine(t *testing.T) {
+	t.Parallel()
+	script := "i=0; while [ $i -lt 5000 ]; do echo \"traceback line $i, padded to be long enough\" >&2; i=$((i+1)); done; " +
+		"printf 'helper: the last line\\r\\n\\n  \\n' >&2; exit 3"
+	_, err := Exec(t.Context(), []string{"/bin/sh", "-c", script}, nil, nil)
+	if err == nil {
+		t.Fatal("Exec() = nil, want the command's failure")
+	}
+	msg := err.Error()
+	if strings.ContainsAny(msg, "\r\n") || !strings.HasSuffix(msg, "helper: the last line") || strings.Contains(msg, "traceback line") {
+		t.Errorf("Exec() = %q, want one line ending with the command's last line", msg)
+	}
+	if !strings.Contains(msg, "exit status 3") {
+		t.Errorf("Exec() = %q, want it to say how the command exited", msg)
+	}
+	// A command that succeeds is no error, whatever it writes to stderr
+	if _, err := Exec(t.Context(), []string{"/bin/sh", "-c", "echo warning >&2"}, nil, nil); err != nil {
+		t.Errorf("Exec() of a command that succeeds = %v", err)
+	}
+}

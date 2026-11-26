@@ -24,12 +24,16 @@ Every file it creates is readable by its own user alone.
 
 ``get-login-header <appdb>`` prints the name of the header Calibre-Web reads
 a user's name from when a reverse proxy logs the user in, as saved in
-``appdb``, and a newline. It prints nothing when no name is saved. It opens
-the database read-only, and needs no password.
+``appdb``, and a newline. It prints nothing when no name is saved. It
+needs no password, and writes nothing to the database, but for rolling
+back a transaction that a stopped Calibre-Web left unfinished, as SQLite
+does on opening it: a database opened read-only cannot do that, and
+cannot be read until it is done. It never creates the database.
 
-It prints nothing else. When it fails, it prints one line to stderr, which
-never holds a password, and exits with code 1. A wrong command line exits
-with code 2.
+It prints nothing else. When it fails, it prints one line to stderr, the
+error's class and the first line of its message, and exits with code 1.
+That line never holds a password, a hash or the request. A wrong command
+line exits with code 2.
 """
 
 import json
@@ -88,7 +92,7 @@ def init(request: dict) -> None:
 
 def login_header(path: str) -> str:
     """Return the login header's name saved in the settings database at path."""
-    db = sqlite3.connect(Path(path).as_uri() + "?mode=ro", uri=True)
+    db = sqlite3.connect(Path(path).as_uri() + "?mode=rw", uri=True)
     try:
         row = db.execute("SELECT config_reverse_proxy_login_header_name FROM settings LIMIT 1").fetchone()
     finally:
@@ -97,6 +101,20 @@ def login_header(path: str) -> str:
         msg = f"{path} holds no settings"
         raise LookupError(msg)
     return (row[0] or "").strip()
+
+
+def one_line(e: BaseException) -> str:
+    """Return e's class and the first line of its message.
+
+    For an error SQLAlchemy raises from the database driver, it is the
+    driver's own error: SQLAlchemy's message also holds the statement and
+    its parameters, which can be a password's hash.
+    """
+    orig = getattr(e, "orig", None)
+    if isinstance(orig, BaseException):
+        e = orig
+    lines = str(e).splitlines()
+    return f"{e.__class__.__name__}: {lines[0] if lines else ''}"
 
 
 def main(argv: list[str]) -> int:
@@ -114,7 +132,7 @@ def main(argv: list[str]) -> int:
                 sys.stderr.write(USAGE + "\n")
                 return 2
     except Exception as e:  # noqa: BLE001 - one line for PID 1, never a traceback
-        sys.stderr.write(f"calibre_web_init: {e.__class__.__name__}: {e}\n")
+        sys.stderr.write(f"calibre_web_init: {one_line(e)}\n")
         return 1
     return 0
 
