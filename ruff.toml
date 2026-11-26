@@ -25,8 +25,10 @@ ignore = [
 # they have no __init__.py: PID 1 runs each by its path, in Calibre's
 # Python or Calibre-Web's
 "firstrun/*.py" = ["INP001"]
-# The SBOM writer too: the Containerfile's sbom stage runs it by its path
+# The SBOM writer and ImageMagick's policy check too: the Containerfile's
+# sbom and libcheck stages run each by its path
 "sbom/*.py" = ["INP001"]
+"imagemagick/*.py" = ["INP001"]
 
 [lint.flake8-copyright]
 # Every file's notice is its REUSE header

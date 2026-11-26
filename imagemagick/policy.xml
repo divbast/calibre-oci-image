@@ -9,9 +9,9 @@
   else was needed in the image's tests: not MIFF, INFO, XC or PNM, nor any
   format for the blank canvas of a series thumbnail.
 
-  The resource limits are upstream's own, unchanged, from
-  config/policy-secure.xml in ImageMagick 7.1.2-36, the version the image
-  builds.
+  The resource limits, and the delegate, path and system lines after the
+  formats, are upstream's own, unchanged, from config/policy-secure.xml in
+  ImageMagick 7.1.2-36, the version the image builds.
 -->
 <policymap>
   <policy domain="resource" name="thread" value="2"/>
@@ -33,4 +33,13 @@
   <policy domain="coder" rights="read | write" pattern="{JPEG,JPG,PNG,WEBP,GIF,TIFF,BMP}"/>
   <!-- A PDF's first page, as its cover: read alone, through Ghostscript -->
   <policy domain="coder" rights="read" pattern="PDF"/>
+
+  <!-- No delegate program runs: Ghostscript is linked in, not run -->
+  <policy domain="delegate" rights="none" pattern="*"/>
+  <!-- No indirect read (@filename), and no pipe -->
+  <policy domain="path" rights="none" pattern="@*"/>
+  <policy domain="path" rights="none" pattern="|*"/>
+  <policy domain="system" name="max-memory-request" value="256MiB"/>
+  <policy domain="system" name="max-profile-size" value="16MiB"/>
+  <policy domain="system" name="filename:literal" value="true"/>
 </policymap>

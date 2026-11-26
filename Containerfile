@@ -114,34 +114,33 @@ EOF
 # to /var/lib/dpkg/status.d/<name>, as DHI lists the runtime's own
 # packages there, and the scanners read it. The list is the packages the
 # bundle and the tools link, and every package those depend on, as apt
-# resolved them against the runtime's packages: Mesa, behind libEGL and
-# libGLX, the X11 client libraries, NSS and NSPR, ALSA's library and
-# libudev, which QtWebEngine links, PCRE2 and libmount, which the bundle's
-# GLib links, fontconfig and a font, libmagic, OpenLDAP's library, libxml2
-# and libxslt, and the image libraries; and, so that as many of the
-# bundle's files as DHI can serve find their libraries, those Qt's X11,
-# Wayland, sound and speech plugins link: PulseAudio's client, flite, and
-# the X11 session, render, shape, keyboard and RandR libraries. Those pull
-# in x11-common, and through it sysvinit-utils. apt-get check then proves
-# nothing is missing: every package's dependencies are met by the
-# runtime's packages and these. Two packages are needed only on x86-64,
-# by Mesa's Intel driver. No maintainer script runs, and none is needed:
-# the libraries are found in the loader's default directories.
+# resolved them against the runtime's packages: libglvnd's libOpenGL,
+# libEGL and libGLX, the X11 client libraries, NSS and NSPR, ALSA's
+# library and libudev, which QtWebEngine links, PCRE2 and libmount, which
+# the bundle's GLib links, fontconfig and a font, libmagic, OpenLDAP's
+# library, libxml2 and libxslt, the image libraries, and libdrm, which the
+# bundle's FFmpeg links; the libraries Qt's Wayland, sound and speech
+# plugins and FFmpeg's device library link, so that they find them too:
+# PulseAudio's client, flite, Wayland's cursor and EGL libraries, and X11's
+# RandR, shape, shared-memory and XFixes; and glibc's libc-bin, for
+# its C.UTF-8 locale, which Qt needs to read and write names that are not
+# ASCII.
+#
+# Mesa, which libEGL and libGLX depend on, is left out, with the LLVM and
+# z3 it brings: Calibre draws its PDFs with no GPU, and works without it.
+# So libegl1's and libglx0's entries in status.d name a dependency,
+# libegl-mesa0 and libglx-mesa0, that the image does not have, and these
+# two alone are allowed when apt-get check proves the rest: every other
+# package's dependencies are met by the runtime's packages and these. No
+# maintainer script runs, and none is needed: the libraries are found in
+# the loader's default directories.
 FROM toolchain AS runtimelibs
-ARG TARGETARCH
 COPY --from=runtime /var/lib/dpkg/status.d /runtime/var/lib/dpkg/status.d
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 WORKDIR /tmp/debs
-RUN extra=(); \
-    if [[ "${TARGETARCH}" == amd64 ]]; then \
-        extra=( \
-            libdrm-intel1=2.4.124-2+deb13u0+dhi0 \
-            libpciaccess0=0.17-3+deb13u0+dhi0 \
-        ); \
-    fi; \
-    apt-get update; \
+RUN apt-get update; \
     install -d /out/var/lib/dpkg/status.d; \
-    apt-get download "${extra[@]}" \
+    apt-get download \
         fontconfig-config=2.15.0-2.3+deb13u0+dhi0 \
         fonts-dejavu-core=2.37-8+deb13u0+dhi0 \
         fonts-dejavu-mono=2.37-8+deb13u0+dhi0 \
@@ -150,38 +149,28 @@ RUN extra=(); \
         libasyncns0=0.8-6+deb13u0+dhi0 \
         libblkid1=2.41.5-0+deb13u1+dhi3 \
         libbrotli1=1.1.0-2+deb13u1+dhi2 \
-        libbsd0=0.12.2-2+deb13u0+dhi1 \
+        libc-bin=2.41-12+deb13u5+dhi0 \
         libcap2=1:2.75-10+deb13u1+dhi1 \
         libdbus-1-3=1.16.2-2+deb13u0+dhi1 \
         libdeflate0=1.23-2+deb13u0+dhi0 \
-        libdrm-amdgpu1=2.4.124-2+deb13u0+dhi0 \
         libdrm-common=2.4.124-2+deb13u0+dhi0 \
         libdrm2=2.4.124-2+deb13u0+dhi0 \
-        libedit2=3.1-20250104-1+deb13u0+dhi2 \
-        libegl-mesa0=25.0.7-2+deb13u1+dhi0 \
         libegl1=1.7.0-1+deb13u0+dhi1 \
-        libelf1t64=0.192-4+deb13u0+dhi1 \
         libflac14=1.5.0+ds-2+deb13u0+dhi0 \
         libflite1=2.2-7+deb13u0+dhi0 \
         libfontconfig1=2.15.0-2.3+deb13u0+dhi0 \
         libfreetype6=2.13.3+dfsg-1+deb13u2+dhi0 \
-        libgbm1=25.0.7-2+deb13u1+dhi0 \
         libgcrypt20=1.11.0-7+deb13u1+dhi1 \
-        libgl1-mesa-dri=25.0.7-2+deb13u1+dhi0 \
         libglvnd0=1.7.0-1+deb13u0+dhi1 \
-        libglx-mesa0=25.0.7-2+deb13u1+dhi0 \
         libglx0=1.7.0-1+deb13u0+dhi1 \
         libgpg-error0=1.51-4+deb13u0+dhi2 \
-        libice6=2:1.1.1-1+deb13u0+dhi0 \
         libjbig0=2.1-6.1+deb13u0+dhi1 \
         libjpeg62-turbo=1:2.1.5-4+deb13u0+dhi0 \
         liblcms2-2=2.16-2+deb13u2+dhi2 \
         libldap2=2.6.10+dfsg-1+deb13u0+dhi1 \
         liblerc4=4.0.0+ds-5+deb13u0+dhi1 \
-        libllvm19=1:19.1.7-3+deb13u0+dhi1 \
         libmagic-mgc=1:5.46-5+deb13u0+dhi1 \
         libmagic1t64=1:5.46-5+deb13u0+dhi1 \
-        libmd0=1.1.0-2+deb13u0+dhi1 \
         libmount1=2.41.5-0+deb13u1+dhi3 \
         libnspr4=2:4.36-1+deb13u0+dhi1 \
         libnss3=2:3.134-1+deb13u0+dhi0 \
@@ -195,21 +184,16 @@ RUN extra=(); \
         libsasl2-2=2.1.28+dfsg1-9+deb13u0+dhi2 \
         libsasl2-modules-db=2.1.28+dfsg1-9+deb13u0+dhi2 \
         libselinux1=3.8.1-1+deb13u0+dhi2 \
-        libsensors-config=1:3.6.2-2+deb13u0+dhi0 \
-        libsensors5=1:3.6.2-2+deb13u0+dhi0 \
         libsharpyuv0=1.5.0-0.1+deb13u0+dhi0 \
-        libsm6=2:1.2.6-1+deb13u0+dhi0 \
         libsndfile1=1.2.2-2+deb13u1+dhi4 \
         libsystemd0=257.13-1~deb13u1+dhi2 \
         libtiff6=4.7.0-3+deb13u3+dhi3 \
         libudev1=257.13-1~deb13u1+dhi2 \
         libvorbis0a=1.3.7-3+deb13u0+dhi0 \
         libvorbisenc2=1.3.7-3+deb13u0+dhi0 \
-        libvulkan1=1.4.309.0-1+deb13u0+dhi0 \
         libwayland-client0=1.23.1-3+deb13u0+dhi0 \
         libwayland-cursor0=1.23.1-3+deb13u0+dhi0 \
         libwayland-egl1=1.23.1-3+deb13u0+dhi0 \
-        libwayland-server0=1.23.1-3+deb13u0+dhi0 \
         libwebp7=1.5.0-0.1+deb13u0+dhi0 \
         libwebpdemux2=1.5.0-0.1+deb13u0+dhi0 \
         libwebpmux3=1.5.0-0.1+deb13u0+dhi0 \
@@ -217,32 +201,17 @@ RUN extra=(); \
         libx11-data=2:1.8.12-1+deb13u0+dhi0 \
         libx11-xcb1=2:1.8.12-1+deb13u0+dhi0 \
         libxau6=1:1.0.11-1+deb13u0+dhi0 \
-        libxcb-dri3-0=1.17.0-2+deb13u0+dhi3 \
-        libxcb-glx0=1.17.0-2+deb13u0+dhi3 \
-        libxcb-present0=1.17.0-2+deb13u0+dhi3 \
-        libxcb-randr0=1.17.0-2+deb13u0+dhi3 \
-        libxcb-render0=1.17.0-2+deb13u0+dhi3 \
         libxcb-shape0=1.17.0-2+deb13u0+dhi3 \
         libxcb-shm0=1.17.0-2+deb13u0+dhi3 \
-        libxcb-sync1=1.17.0-2+deb13u0+dhi3 \
         libxcb-xfixes0=1.17.0-2+deb13u0+dhi3 \
-        libxcb-xkb1=1.17.0-2+deb13u0+dhi3 \
         libxcb1=1.17.0-2+deb13u0+dhi3 \
         libxdmcp6=1:1.1.5-1+deb13u0+dhi0 \
         libxext6=2:1.3.4-1+deb13u0+dhi1 \
-        libxkbcommon-x11-0=1.7.0-2+deb13u0+dhi0 \
         libxkbcommon0=1.7.0-2+deb13u0+dhi0 \
         libxml2=2.12.7+dfsg+really2.9.14-2.1+deb13u3+dhi3 \
         libxrandr2=2:1.5.4-1+deb13u0+dhi0 \
         libxrender1=1:0.9.12-1+deb13u0+dhi1 \
-        libxshmfence1=1.3.3-1+deb13u0+dhi0 \
         libxslt1.1=1.1.35-1.2+deb13u3+dhi2 \
-        libxxf86vm1=1:1.1.4-1+deb13u0+dhi0 \
-        libz3-4=4.13.3-1+deb13u0+dhi1 \
-        lsb-base=11.6+deb13u0+dhi1 \
-        mesa-libgallium=25.0.7-2+deb13u1+dhi0 \
-        sysvinit-utils=3.14-4+deb13u0+dhi1 \
-        x11-common=1:7.7+24+deb13u1+dhi0 \
         xkb-data=2.42-1+deb13u0+dhi0 \
         ; \
     for deb in /tmp/debs/*.deb; do \
@@ -258,12 +227,17 @@ RUN extra=(); \
         sed '1a Status: install ok installed' "${f}"; \
         echo; \
     done >/tmp/status; \
-    if ! apt-get check -o Dir::State::status=/tmp/status >/tmp/check 2>&1; then \
+    apt-get check -o Dir::State::status=/tmp/status >/tmp/check 2>&1 || true; \
+    awk '/ : Depends: / { pkg = $1; sub(/.* : Depends: /, ""); print pkg, $1; next } \
+        /^ +Depends: / { sub(/^ +Depends: /, ""); print pkg, $1 }' /tmp/check | sort -u >/tmp/unmet; \
+    printf '%s\n' 'libegl1 libegl-mesa0' 'libglx0 libglx-mesa0' | sort >/tmp/allowed; \
+    if comm -23 /tmp/unmet /tmp/allowed | grep . \
+        || { [[ ! -s /tmp/unmet ]] && ! apt-get check -o Dir::State::status=/tmp/status >/dev/null 2>&1; }; then \
         cat /tmp/check >&2; \
         echo "ERROR: a runtime package needs one the Containerfile does not download: add it to the list above" >&2; \
         exit 1; \
     fi; \
-    rm -rf /out/usr/share/man /out/usr/share/lintian /out/usr/share/bug /tmp/debs/*.deb /tmp/status /var/lib/apt/lists/*; \
+    rm -rf /out/usr/share/man /out/usr/share/lintian /out/usr/share/bug /tmp/debs/*.deb /tmp/status /tmp/check /tmp/unmet /tmp/allowed /var/lib/apt/lists/*; \
     echo "$(find /out/var/lib/dpkg/status.d -type f | wc -l) packages unpacked"
 
 # Calibre's own build for Linux, the bundle for this arch, held to its
@@ -670,12 +644,15 @@ RUN CGO_ENABLED=0 GOFLAGS=-mod=readonly GOTOOLCHAIN=local \
 # wl-shell plugin (Qt's WlShellIntegration); the speech-dispatcher plugin
 # (libspeechd); and the PyQt6 modules, with Qt's PDF image plugin, for the
 # Qt PDF, PDF widgets, Quick Controls, SVG widgets and Test libraries the
-# bundle does not ship. Every other file must find all it needs, so a new
-# file in a Calibre update that misses a library fails the build. A
-# package file that would replace one of the runtime's fails too. Then
-# Ghostscript, and the libraries Python loads by name rather than by
-# link, libmagic and ImageMagick's, are run there once, and a format the
-# policy denies must be refused. Calibre's launchers need /proc, which a
+# bundle does not ship. Each of the 19 must be in the bundle, so a Calibre
+# update that renames or drops one fails until the list follows; every
+# other file must find all it needs, so a new file that misses a library
+# fails the build. A package file that would replace one of the runtime's
+# fails too. Then Ghostscript, and the libraries Python loads by name
+# rather than by link, libmagic and ImageMagick's, are run there once, and
+# imagemagick/check_policy.py proves the policy: a PDF's first page, which
+# Ghostscript writes here, reads to a JPEG, and SVG, MSL, PostScript, EPS
+# and writing a PDF are refused. Calibre's launchers need /proc, which a
 # build cannot mount there, so Calibre first runs in the image's tests.
 # The image takes the packages from this stage, so none ships unless the
 # check passed.
@@ -688,6 +665,7 @@ COPY --from=deps /app /check/app
 COPY --from=ghostscript /opt/ghostscript /check/opt/ghostscript
 COPY --from=imagemagick /opt/imagemagick /check/opt/imagemagick
 COPY --from=unrar /out/unrar /check/usr/local/bin/unrar
+COPY imagemagick/check_policy.py /check/tmp/check_policy.py
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 RUN while read -r f; do \
         if [[ -e "/check/${f}" || -L "/check/${f}" ]]; then \
@@ -700,31 +678,47 @@ RUN while read -r f; do \
     interp=$(readelf -lW /check/opt/calibre/calibre-server | sed -n 's/.*Requesting program interpreter: \(.*\)\]$/\1/p'); \
     machine=$(readelf -h /check/opt/calibre/calibre-server | sed -n 's/^ *Machine: *//p'); \
     printf '\177ELF' >/tmp/elf; \
+    exempt=( \
+        lib/libQt6XcbQpa.so.6 \
+        plugins/platforms/libqxcb.so \
+        plugins/xcbglintegrations/libqxcb-egl-integration.so \
+        plugins/xcbglintegrations/libqxcb-glx-integration.so \
+        plugins/platforms/libqlinuxfb.so \
+        plugins/platforms/libqvkkhrdisplay.so \
+        plugins/platforms/libqeglfs.so \
+        plugins/egldeviceintegrations/libqeglfs-emu-integration.so \
+        plugins/egldeviceintegrations/libqeglfs-kms-egldevice-integration.so \
+        plugins/egldeviceintegrations/libqeglfs-kms-integration.so \
+        plugins/egldeviceintegrations/libqeglfs-x11-integration.so \
+        plugins/wayland-shell-integration/libwl-shell-plugin.so \
+        plugins/texttospeech/libqtexttospeech_speechd.so \
+        lib/calibre-extensions/PyQt6.QtPdf.so \
+        lib/calibre-extensions/PyQt6.QtPdfWidgets.so \
+        plugins/imageformats/libqpdf.so \
+        lib/calibre-extensions/PyQt6.QtQuickControls2.so \
+        lib/calibre-extensions/PyQt6.QtSvgWidgets.so \
+        lib/calibre-extensions/PyQt6.QtTest.so \
+    ); \
+    declare -A skip; \
+    for e in "${exempt[@]}"; do \
+        if [[ ! -f "/check/opt/calibre/${e}" ]]; then \
+            echo "ERROR: /opt/calibre/${e}, which the check leaves out, is not in the bundle: remove it from the list" >&2; \
+            exit 1; \
+        fi; \
+        skip[${e}]=1; \
+    done; \
     files=0; \
-    exempt=0; \
+    left=0; \
     : >/tmp/missing; \
     while IFS= read -r -d '' f; do \
         cmp -s -n 4 "${f}" /tmp/elf || continue; \
         [[ "$(readelf -h "${f}" | sed -n 's/^ *Machine: *//p')" == "${machine}" ]] || continue; \
         readelf -d "${f}" 2>/dev/null | grep -q '(NEEDED)' || continue; \
         path=${f#/check}; \
-        case "${path#/opt/calibre/}" in \
-            lib/libQt6XcbQpa.so.6 | plugins/platforms/libqxcb.so \
-            | plugins/xcbglintegrations/libqxcb-egl-integration.so \
-            | plugins/xcbglintegrations/libqxcb-glx-integration.so \
-            | plugins/platforms/libqlinuxfb.so | plugins/platforms/libqvkkhrdisplay.so \
-            | plugins/platforms/libqeglfs.so | plugins/egldeviceintegrations/libqeglfs-emu-integration.so \
-            | plugins/egldeviceintegrations/libqeglfs-kms-egldevice-integration.so \
-            | plugins/egldeviceintegrations/libqeglfs-kms-integration.so \
-            | plugins/egldeviceintegrations/libqeglfs-x11-integration.so \
-            | plugins/wayland-shell-integration/libwl-shell-plugin.so \
-            | plugins/texttospeech/libqtexttospeech_speechd.so \
-            | lib/calibre-extensions/PyQt6.QtPdf.so | lib/calibre-extensions/PyQt6.QtPdfWidgets.so \
-            | plugins/imageformats/libqpdf.so | lib/calibre-extensions/PyQt6.QtQuickControls2.so \
-            | lib/calibre-extensions/PyQt6.QtSvgWidgets.so | lib/calibre-extensions/PyQt6.QtTest.so) \
-                exempt=$((exempt + 1)); \
-                continue ;; \
-        esac; \
+        if [[ -n "${skip[${path#/opt/calibre/}]:-}" ]]; then \
+            left=$((left + 1)); \
+            continue; \
+        fi; \
         files=$((files + 1)); \
         libs=(); \
         if [[ "${path}" == /opt/calibre/* ]]; then libs=(LD_LIBRARY_PATH=/opt/calibre/lib); fi; \
@@ -739,25 +733,15 @@ RUN while read -r f; do \
         echo "ERROR: these files need libraries the image does not ship" >&2; \
         exit 1; \
     fi; \
-    echo "${files} ELF files find every library they need; ${exempt} of the bundle's are left out"; \
+    echo "${files} ELF files find every library they need; ${left} of the bundle's are left out"; \
     test "$(chroot /check /opt/ghostscript/bin/gs --version)" = "${GHOSTSCRIPT_VERSION}"; \
-    printf '%s\n' \
-        'import magic, wand.version' \
-        'from wand.exceptions import PolicyError' \
-        'from wand.image import Image' \
-        'print(magic.from_buffer(b"%PDF-1.4"), wand.version.MAGICK_VERSION)' \
-        'try:' \
-        '    Image(blob=b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"/>", format="svg")' \
-        'except PolicyError:' \
-        '    print("the policy refuses SVG")' \
-        'except Exception as e:' \
-        '    raise SystemExit(f"ERROR: the ImageMagick policy lets SVG through, to fail as {e}") from None' \
-        'else:' \
-        '    raise SystemExit("ERROR: the ImageMagick policy lets SVG through")' \
-        >/check/tmp/imagemagick.py; \
-    MAGICK_HOME=/opt/imagemagick chroot /check /app/venv/bin/python -I /tmp/imagemagick.py >/tmp/loaded; \
+    MAGICK_HOME=/opt/imagemagick chroot /check /app/venv/bin/python -I -c \
+        'import magic, wand.version; print(magic.from_buffer(b"%PDF-1.4"), wand.version.MAGICK_VERSION)' >/tmp/loaded; \
     cat /tmp/loaded; \
     grep -q "ImageMagick ${IMAGEMAGICK_VERSION} " /tmp/loaded; \
+    chroot /check /opt/ghostscript/bin/gs -q -dSAFER -dBATCH -dNOPAUSE -sDEVICE=pdfwrite -sOutputFile=/tmp/page.pdf \
+        -c '100 100 moveto 200 200 lineto stroke showpage'; \
+    MAGICK_HOME=/opt/imagemagick chroot /check /app/venv/bin/python -I /tmp/check_policy.py /tmp/page.pdf; \
     rm -rf /check /tmp/elf /tmp/list /tmp/missing /tmp/loaded
 
 FROM runtime
