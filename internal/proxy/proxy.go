@@ -17,13 +17,19 @@ import (
 
 // loginRefusal is what an unlisted source reads while Calibre-Web's login
 // header name is unknown.
-const loginRefusal = "Calibre-Web's login settings are being read again; try again shortly"
+const loginRefusal = "Calibre-Web's login settings could not be read; try again in 10 seconds."
 
 // loginRetryAfter is how many seconds such a source is told to wait.
 const loginRetryAfter = 10 * time.Second
 
 // Hooks lets the caller take part in each request.
 type Hooks struct {
+	// Both hooks get the request with its path as the app will route it:
+	// when the request carries an X-Script-Name that the proxy keeps (it
+	// came from a listed source) and the path starts with it, the hooks see
+	// the path without that prefix. The request the app receives is not
+	// changed. The hooks must not rely on r.URL.RawPath.
+	//
 	// Gate runs before a request goes on. When it denies, the client gets
 	// a 503 with a Retry-After of retryAfter, in whole seconds, and reason
 	// as its one line of text. A denied request does not call Started.
@@ -79,27 +85,34 @@ func (h *handler) managed() bool {
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h.c.BlockReconnect && r.URL.Path == "/reconnect" {
+	trusted := isTrusted(h.c.Trusted, r.RemoteAddr)
+	routed := routedPath(r, trusted)
+	seen := r // what the hooks see
+	if routed != r.URL.Path {
+		seen = r.Clone(r.Context())
+		seen.URL.Path, seen.URL.RawPath = routed, ""
+	}
+	if h.c.BlockReconnect && routed == "/reconnect" {
 		http.NotFound(w, r)
 		return
 	}
-	if h.managed() && !isTrusted(h.c.Trusted, r.RemoteAddr) && !h.c.Login.admit(r.Context()) {
+	if h.managed() && !trusted && !h.c.Login.admit(r.Context()) {
 		refuse(w, loginRetryAfter, loginRefusal)
 		return
 	}
 	if gate := h.c.Hooks.Gate; gate != nil {
-		if deny, after, reason := gate(r); deny {
+		if deny, after, reason := gate(seen); deny {
 			refuse(w, after, reason)
 			return
 		}
 	}
-	if h.managed() && changesSettings(r) {
+	if h.managed() && changesSettings(r.Method, routed) {
 		h.c.Login.begin()
 		defer h.c.Login.end()
 	}
 	sw := &statusWriter{ResponseWriter: w}
 	if started := h.c.Hooks.Started; started != nil {
-		if done := started(r); done != nil {
+		if done := started(seen); done != nil {
 			defer func() {
 				status := sw.status
 				if status == 0 {
@@ -112,11 +125,24 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.rp.ServeHTTP(sw, r)
 }
 
-// changesSettings reports whether r can change Calibre-Web's administrator
-// settings.
-func changesSettings(r *http.Request) bool {
-	return r.Method != http.MethodGet && r.Method != http.MethodHead &&
-		strings.HasPrefix(r.URL.Path, "/admin/config")
+// routedPath returns the path Calibre-Web routes: the request's path
+// without the X-Script-Name prefix, as Calibre-Web removes it. A source that
+// is not listed has that header removed, so its path stays as it is.
+func routedPath(r *http.Request, trusted bool) string {
+	path := r.URL.Path
+	if !trusted {
+		return path
+	}
+	if script := strings.Join(r.Header.Values("X-Script-Name"), ", "); script != "" {
+		return strings.TrimPrefix(path, script)
+	}
+	return path
+}
+
+// changesSettings reports whether a request can change Calibre-Web's
+// settings: any method but GET and HEAD on a path under /admin/.
+func changesSettings(method, routed string) bool {
+	return method != http.MethodGet && method != http.MethodHead && strings.HasPrefix(routed, "/admin/")
 }
 
 // refuse answers 503 with the reason as one line of text.
@@ -137,7 +163,7 @@ func (h *handler) rewrite(pr *httputil.ProxyRequest) {
 
 	out := pr.Out.Header
 	for k := range out {
-		if isForwarding(k) {
+		if isProxyHeader(k) {
 			delete(out, k)
 		}
 	}
@@ -149,7 +175,7 @@ func (h *handler) rewrite(pr *httputil.ProxyRequest) {
 	if trusted {
 		for k, v := range pr.In.Header {
 			// An underscore spelling would reach the app as the same header
-			if isForwarding(k) && !strings.Contains(k, "_") && !strings.EqualFold(k, "X-Forwarded-For") {
+			if isProxyHeader(k) && !strings.Contains(k, "_") && !strings.EqualFold(k, "X-Forwarded-For") {
 				out[k] = slices.Clone(v)
 			}
 		}
@@ -175,11 +201,13 @@ func sameHeader(a, b string) bool {
 	return strings.EqualFold(strings.ReplaceAll(a, "-", "_"), strings.ReplaceAll(b, "-", "_"))
 }
 
-// isForwarding reports whether name is Forwarded or starts with X-Forwarded-,
-// in any spelling of the dashes.
-func isForwarding(name string) bool {
+// isProxyHeader reports whether name is one of the headers that say how a
+// request came through a proxy, in any spelling of the dashes: Forwarded,
+// X-Forwarded-*, X-Scheme, X-Script-Name and X-Real-IP.
+func isProxyHeader(name string) bool {
 	n := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
-	return n == "FORWARDED" || strings.HasPrefix(n, "X_FORWARDED_")
+	return n == "FORWARDED" || strings.HasPrefix(n, "X_FORWARDED_") ||
+		n == "X_SCHEME" || n == "X_SCRIPT_NAME" || n == "X_REAL_IP"
 }
 
 // statusWriter keeps the status the app gave.

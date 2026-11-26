@@ -170,13 +170,16 @@ func TestLoginHeaderHold(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
+	var once sync.Once
+	release := func() { once.Do(func() { close(releasePost) }) }
+	defer release() // so a failing test does not leave srv.Close waiting
 	b := &backend{srv: srv}
 	lh, rd := loaded(t, "X-User")
 	h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
 
 	postDone := make(chan struct{})
 	go func() {
-		do(h, untrustedPeer, "POST", "http://calibre.test/admin/config", nil)
+		do(h, untrustedPeer, "POST", "http://calibre.test/admin/ajaxconfig", nil)
 		close(postDone)
 	}()
 	<-inPost
@@ -195,7 +198,7 @@ func TestLoginHeaderHold(t *testing.T) {
 	if within(getDone, 150*time.Millisecond) {
 		t.Fatal("an unlisted request did not wait for the settings request")
 	}
-	close(releasePost)
+	release()
 	<-postDone
 	waitReads(t, rd, 2) // the first read is Load's
 	if within(getDone, 150*time.Millisecond) {
@@ -224,15 +227,19 @@ func TestLoginHeaderGetDoesNotHold(t *testing.T) {
 	lh, rd := loaded(t, "X-User")
 	h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
 	for _, c := range []struct{ method, path string }{
-		{"GET", "/admin/config"}, {"HEAD", "/admin/config"}, {"POST", "/admin/other"}, {"POST", "/"},
+		{"GET", "/admin/config"},
+		{"GET", "/admin/ajaxconfig"},
+		{"HEAD", "/admin/ajaxconfig"},
+		{"POST", "/adminx"},
+		{"POST", "/"},
 	} {
 		do(h, untrustedPeer, c.method, "http://calibre.test"+c.path, nil)
 	}
 	if rd.count() != 1 {
 		t.Fatalf("%d reads, want only Load's", rd.count())
 	}
-	do(h, untrustedPeer, "POST", "http://calibre.test/admin/configuration", nil)
-	do(h, untrustedPeer, "DELETE", "http://calibre.test/admin/config/x", nil)
+	do(h, untrustedPeer, "POST", "http://calibre.test/admin/user/1", nil)
+	do(h, untrustedPeer, "DELETE", "http://calibre.test/admin/ajaxconfig", nil)
 	do(h, untrustedPeer, "GET", "http://calibre.test/", nil) // waits for the re-reads
 	if rd.count() != 3 {
 		t.Fatalf("%d reads, want 3", rd.count())
@@ -245,13 +252,13 @@ func TestLoginHeaderFailClosed(t *testing.T) {
 	lh, rd := loaded(t, "X-User")
 	h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
 	rd.set("", errors.New("the helper failed"), nil)
-	do(h, trustedPeer, "POST", "http://calibre.test/admin/config", nil)
+	do(h, trustedPeer, "POST", "http://calibre.test/admin/ajaxconfig", nil)
 	hits := b.hits.Load()
 
 	w := do(h, untrustedPeer, "GET", "http://calibre.test/", http.Header{"X-User": {"admin"}})
 	if w.Code != 503 || w.Header().Get("Retry-After") != "10" ||
 		!strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") ||
-		w.Body.String() != "Calibre-Web's login settings are being read again; try again shortly\n" {
+		w.Body.String() != "Calibre-Web's login settings could not be read; try again in 10 seconds.\n" {
 		t.Fatalf("unlisted request while unknown: %d %v %q", w.Code, w.Header(), w.Body.String())
 	}
 	if b.hits.Load() != hits {
@@ -268,7 +275,7 @@ func TestLoginHeaderRetryOncePerSecond(t *testing.T) {
 		return do(h, untrustedPeer, "GET", "http://calibre.test/", http.Header{"X-New": {"forged"}}).Code
 	}
 	rd.set("", errors.New("the helper failed"), nil)
-	do(h, trustedPeer, "POST", "http://calibre.test/admin/config", nil)
+	do(h, trustedPeer, "POST", "http://calibre.test/admin/ajaxconfig", nil)
 	if c := get(); c != 503 || rd.count() != 2 {
 		t.Fatalf("at once: status %d, %d reads, want 503 and 2", c, rd.count())
 	}
@@ -302,7 +309,7 @@ func TestLoginHeaderTrustedUnaffected(t *testing.T) {
 	lh, rd, clk := loadedWithClock(t, "X-User")
 	h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
 	rd.set("", errors.New("the helper failed"), nil)
-	do(h, trustedPeer, "POST", "http://calibre.test/admin/config", nil)
+	do(h, trustedPeer, "POST", "http://calibre.test/admin/ajaxconfig", nil)
 
 	// While the name is unknown, a listed proxy goes straight through.
 	for range 2 {
@@ -331,5 +338,24 @@ func TestLoginHeaderTrustedUnaffected(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("a listed proxy waited")
+	}
+}
+
+func TestLoginHeaderHoldBehindScriptName(t *testing.T) {
+	t.Parallel()
+	b := newBackend(t)
+	lh, rd := loaded(t, "X-User")
+	h := New(Config{Target: b.target(), Trusted: trustedNet, Login: lh})
+	hdr := http.Header{"X-Script-Name": {"/x"}}
+	do(h, trustedPeer, "POST", "http://calibre.test/x/admin/ajaxconfig", hdr)
+	do(h, untrustedPeer, "GET", "http://calibre.test/", nil) // waits for the re-read
+	if rd.count() != 2 {
+		t.Fatalf("%d reads, want 2", rd.count())
+	}
+	// Without the prefix in the header, the same path is not under /admin/.
+	do(h, trustedPeer, "POST", "http://calibre.test/x/admin/ajaxconfig", nil)
+	do(h, untrustedPeer, "GET", "http://calibre.test/", nil)
+	if rd.count() != 2 {
+		t.Fatalf("%d reads, want 2", rd.count())
 	}
 }

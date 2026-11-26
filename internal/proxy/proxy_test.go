@@ -84,6 +84,10 @@ func TestHeadersUntrusted(t *testing.T) {
 		"X-Forwarded-Host":  {"evil.example"},
 		"X-Forwarded-Port":  {"443"},
 		"X_Forwarded_For":   {"203.0.113.9"},
+		"X-Scheme":          {"https"},
+		"X-Script-Name":     {"/evil"},
+		"X_Script_Name":     {"/evil"},
+		"X-Real-IP":         {"203.0.113.9"},
 		"Forwarded":         {"for=203.0.113.9"},
 		"X-Keep":            {"yes"},
 	}
@@ -96,7 +100,7 @@ func TestHeadersUntrusted(t *testing.T) {
 	}
 	for k := range got {
 		n := strings.ToUpper(strings.ReplaceAll(k, "-", "_"))
-		if n != "X_FORWARDED_FOR" && (strings.HasPrefix(n, "X_FORWARDED_") || n == "FORWARDED") {
+		if n != "X_FORWARDED_FOR" && isProxyHeader(k) {
 			t.Errorf("forged header %s reached upstream: %q", k, got[k])
 		}
 		if k == "X_Forwarded_For" {
@@ -136,6 +140,9 @@ func TestHeadersTrusted(t *testing.T) {
 		"X-Forwarded-Proto": {"https"},
 		"X-Forwarded-Host":  {"books.example"},
 		"Forwarded":         {"for=203.0.113.5"},
+		"X-Scheme":          {"https"},
+		"X-Script-Name":     {"/x"},
+		"X-Real-IP":         {"203.0.113.5"},
 		"X-User":            {"admin"},
 	}
 	for _, peer := range []string{trustedPeer, "[::ffff:10.1.2.3]:5000"} {
@@ -147,6 +154,9 @@ func TestHeadersTrusted(t *testing.T) {
 		if got.Get("X-Forwarded-Proto") != "https" || got.Get("X-Forwarded-Host") != "books.example" ||
 			got.Get("Forwarded") != "for=203.0.113.5" {
 			t.Errorf("%s: forwarded headers changed: %v", peer, got)
+		}
+		if got.Get("X-Scheme") != "https" || got.Get("X-Script-Name") != "/x" || got.Get("X-Real-IP") != "203.0.113.5" {
+			t.Errorf("%s: X-Scheme, X-Script-Name or X-Real-IP changed: %v", peer, got)
 		}
 		if got.Get("X-User") != "admin" {
 			t.Errorf("%s: the login header was removed", peer)
@@ -377,4 +387,39 @@ func TestStreams(t *testing.T) {
 			return n
 		})
 	})
+}
+
+func TestRoutedPath(t *testing.T) {
+	t.Parallel()
+	b := newBackend(t)
+	var seenGate, seenStarted []string
+	h := New(Config{Target: b.target(), Trusted: trustedNet, BlockReconnect: true, Hooks: Hooks{
+		Gate: func(r *http.Request) (bool, time.Duration, string) {
+			seenGate = append(seenGate, r.URL.Path)
+			return false, 0, ""
+		},
+		Started: func(r *http.Request) func(int) {
+			seenStarted = append(seenStarted, r.URL.Path)
+			return nil
+		},
+	}})
+	prefix := http.Header{"X-Script-Name": {"/x"}}
+	if w := do(h, trustedPeer, "GET", "http://calibre.test/x/reconnect", prefix); w.Code != 404 {
+		t.Errorf("/x/reconnect behind X-Script-Name /x = %d, want 404", w.Code)
+	}
+	if w := do(h, trustedPeer, "GET", "http://calibre.test/reconnect", prefix); w.Code != 404 {
+		t.Errorf("/reconnect behind X-Script-Name /x = %d, want 404: the prefix is removed only when present", w.Code)
+	}
+	// An unlisted source's X-Script-Name is removed, so its path is not shortened.
+	if w := do(h, untrustedPeer, "GET", "http://calibre.test/x/reconnect", prefix); w.Code != 200 {
+		t.Errorf("unlisted /x/reconnect = %d, want 200", w.Code)
+	}
+	seenGate, seenStarted = nil, nil
+	do(h, trustedPeer, "GET", "http://calibre.test/x/books?a=1", prefix)
+	if len(seenGate) != 1 || seenGate[0] != "/books" || len(seenStarted) != 1 || seenStarted[0] != "/books" {
+		t.Errorf("hooks saw %v and %v, want /books", seenGate, seenStarted)
+	}
+	if b.got().Get("X-Script-Name") != "/x" {
+		t.Error("the app did not get X-Script-Name")
+	}
 }
