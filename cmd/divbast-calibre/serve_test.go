@@ -166,6 +166,44 @@ func TestLoginReader(t *testing.T) {
 	}
 }
 
+// TestRereadLogged is a read of the login header setting after the first:
+// each that fails logs one line, which names app.db and says why, as the
+// start's own failure does; one that works logs nothing. Before logging is
+// on, a failure logs nothing, since the start reports the first read's
+// failure itself.
+func TestRereadLogged(t *testing.T) {
+	t.Parallel()
+	fail := true
+	r := &loggedRead{read: loginReader(func(context.Context, []string, []string, []byte) ([]byte, error) {
+		if fail {
+			return nil, errors.New("/app/venv/bin/python exited with status 1: calibre_web_init: DatabaseError: file is not a database")
+		}
+		return []byte("X-Remote-User\n"), nil
+	}, nil, image)}
+	var logw bytes.Buffer
+	r.logw = &logw
+	line := "divbast-calibre: cannot read Calibre-Web's login header setting from /config/calibre-web/app.db: " +
+		"/app/venv/bin/python exited with status 1: calibre_web_init: DatabaseError: file is not a database\n"
+
+	if _, err := r.Read(t.Context()); err == nil || logw.Len() != 0 {
+		t.Errorf("the first read, before logging is on: error %v, log %q, want an error and no log", err, logw.String())
+	}
+	r.on.Store(true)
+	for i := range 2 {
+		if _, err := r.Read(t.Context()); err == nil {
+			t.Errorf("failed read %d gave no error", i+1)
+		}
+	}
+	if got := logw.String(); got != line+line {
+		t.Errorf("two failed reads logged %q, want this line twice: %q", got, line)
+	}
+	logw.Reset()
+	fail = false
+	if name, err := r.Read(t.Context()); err != nil || name != "X-Remote-User" || logw.Len() != 0 {
+		t.Errorf("a read that works: %q, %v, log %q; want X-Remote-User, no error, and no log", name, err, logw.String())
+	}
+}
+
 // fakeEvents records what the hooks tell the Coordinator.
 type fakeEvents struct {
 	mu       sync.Mutex

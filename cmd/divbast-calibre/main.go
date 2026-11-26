@@ -68,6 +68,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -230,11 +231,13 @@ func startApps(ctx context.Context, s *settings) int {
 
 	// From here on, every program PID 1 runs goes through the supervisor's
 	// Exec, whose reaper collects them all
-	login := proxy.NewLoginHeader(loginReader(sup.Exec, env, s.l), loginTimeout, time.Now)
+	read := &loggedRead{read: loginReader(sup.Exec, env, s.l), logw: s.stderr}
+	login := proxy.NewLoginHeader(read.Read, loginTimeout, time.Now)
 	if err := login.Load(ctx); err != nil {
 		say(s.stderr, "%v", err)
 		return 1
 	}
+	read.on.Store(true)
 
 	apps := reload.New(reload.SystemClock(), &reloader{sup: sup, client: &http.Client{}, reconnect: "http://" + calibreWebAddr + "/reconnect"}, reloadOptions)
 	defer apps.Stop()
@@ -309,6 +312,28 @@ func loginReader(run firststart.Runner, env []string, l layout) func(context.Con
 		}
 		return strings.TrimSpace(string(out)), nil
 	}
+}
+
+// loggedRead is the read of Calibre-Web's login header setting that
+// LoginHeader makes, which logs each failed read in one line once on is
+// set: the reads after the first, at the start, whose failure the start
+// reports itself. Without the line, an unlisted client would get 503s on
+// 8083 with nothing in the log to say why. LoginHeader reads again after
+// each admin change, and at most once a second while the name is unknown,
+// so the lines cannot flood the log.
+type loggedRead struct {
+	read func(context.Context) (string, error)
+	logw io.Writer
+	on   atomic.Bool
+}
+
+// Read reads the setting once.
+func (r *loggedRead) Read(ctx context.Context) (string, error) {
+	name, err := r.read(ctx)
+	if err != nil && r.on.Load() {
+		say(r.logw, "%v", err)
+	}
+	return name, err
 }
 
 // serveProxies serves port 8080 for the Content Server and 8083 for
