@@ -16,6 +16,12 @@ import (
 	"time"
 )
 
+// abandonedAfter is how long a conversion stays counted after it was last
+// heard of: calibre-server forgets a conversion whose status no poll has
+// asked for in 360 s (expire_old_jobs, in src/calibre/srv/convert.py),
+// and then never writes its new format.
+const abandonedAfter = 360 * time.Second
+
 // The reasons a refused request on port 8080 is given.
 const (
 	pendingReason = "Calibre's library is about to reload a change made in Calibre-Web; changes are paused, try again in 10 seconds."
@@ -60,8 +66,9 @@ type Options struct {
 	Window time.Duration
 	// Quiet is how long the library must go unchanged before a reload.
 	Quiet time.Duration
-	// Cap is the longest a restart of calibre-server waits, from the
-	// first change that called for it, for the Content Server to be idle.
+	// Cap is the longest a reload waits, from the first change that called
+	// for it: for the library to go quiet, and, for a restart of
+	// calibre-server, for the Content Server to be idle.
 	Cap time.Duration
 	// RetryAfter is how long a refused request on port 8080 is told to
 	// wait.
@@ -75,7 +82,10 @@ type Options struct {
 // A change is put down to each app with a request that can change the
 // library (see Mutating) open when the change is seen, or ended at most
 // Window before. A conversion calibre-server runs, or ended at most
-// Window before, counts as such a request. When one app made the change,
+// Window before, counts as such a request. A conversion runs from its
+// start until a status poll says it no longer runs, until calibre-server
+// starts again, or until 360 s after its start or its last poll, when
+// calibre-server forgets it. When one app made the change,
 // the other is reloaded; when both did, both are. When neither did, but an
 // app is starting, or being reloaded, the change is that app's own, and
 // reloads nothing: an app's own start lasts until Window after its port
@@ -84,8 +94,10 @@ type Options struct {
 //
 // A reload waits until the library has gone Quiet long without a change.
 // A restart of calibre-server also waits until no request to it is open
-// and no conversion it runs is left, but no longer than Cap after the
-// first change that called for it.
+// and no conversion it runs is left. Neither waits longer than Cap after
+// the first change that called for it. While a restart is to come, port
+// 8080 refuses the requests that can change the library, but a
+// conversion's status poll, so that the conversion can end.
 type Coordinator struct {
 	clk  Clock
 	r    Reloader
@@ -103,7 +115,7 @@ type Coordinator struct {
 	jobs         map[int]*job // the conversions calibre-server runs, by id
 	unread       []time.Time  // the starts of those whose id could not be read
 	want         [2]bool      // a reload of each app is to come
-	since        time.Time    // when calibre-server's restart was first called for
+	since        [2]time.Time // when each app's reload was first called for
 	quietAt      time.Time    // when the library will have gone Quiet long unchanged
 	quiet        bool         // it has, since the last change
 	restarting   bool         // from a restart's call until the port accepts again
@@ -126,7 +138,14 @@ type appState struct {
 // job is a conversion calibre-server runs.
 type job struct {
 	running bool
+	heard   time.Time // its start, or its last poll that said it runs
 	doneAt  time.Time
+}
+
+// runningAt reports whether j runs at at: it has not ended, and
+// calibre-server has not forgotten it.
+func (j *job) runningAt(at time.Time) bool {
+	return j.running && at.Before(j.heard.Add(abandonedAfter))
 }
 
 // actions are the reloads a step calls for.
@@ -205,11 +224,11 @@ func (c *Coordinator) DBChanged(at time.Time) {
 	default:
 		reload = [2]bool{true, true}
 	}
-	if reload[ContentServer] && !c.want[ContentServer] {
-		c.since = now
+	for app, r := range reload {
+		if r && !c.want[app] {
+			c.want[app], c.since[app] = true, now
+		}
 	}
-	c.want[ContentServer] = c.want[ContentServer] || reload[ContentServer]
-	c.want[CalibreWeb] = c.want[CalibreWeb] || reload[CalibreWeb]
 	if c.want[ContentServer] || c.want[CalibreWeb] {
 		c.quiet, c.quietAt = false, now.Add(c.o.Quiet)
 	}
@@ -221,9 +240,18 @@ func (c *Coordinator) DBChanged(at time.Time) {
 // ConversionStarted tells the Coordinator that calibre-server started the
 // conversion jobID.
 func (c *Coordinator) ConversionStarted(jobID int) {
+	c.conversionRuns(jobID)
+}
+
+// conversionRuns tells the Coordinator that calibre-server said the
+// conversion jobID runs: it starts, or a poll found it running.
+func (c *Coordinator) conversionRuns(jobID int) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.jobs[jobID] = &job{running: true}
+	now := c.clk.Now()
+	c.jobs[jobID] = &job{running: true, heard: now}
+	acts := c.step(now)
+	c.mu.Unlock()
+	c.do(acts)
 }
 
 // conversionUnread tells the Coordinator that calibre-server started a
@@ -294,7 +322,7 @@ func (c *Coordinator) Gate(app App, method, path string) (deny bool, retryAfter 
 	switch {
 	case c.restarting:
 		return true, c.o.RetryAfter, runningReason
-	case c.want[ContentServer] && Mutating(app, method, path):
+	case c.want[ContentServer] && Mutating(app, method, path) && !isStatusPoll(method, path):
 		return true, c.o.RetryAfter, pendingReason
 	}
 	return false, 0, ""
@@ -332,7 +360,7 @@ func (c *Coordinator) own(at time.Time) (set [2]bool) {
 // at. The caller holds the lock.
 func (c *Coordinator) converting(at time.Time) bool {
 	for _, j := range c.jobs {
-		if j.running {
+		if j.runningAt(at) {
 			return true
 		}
 	}
@@ -348,7 +376,7 @@ func (c *Coordinator) converting(at time.Time) bool {
 // lock.
 func (c *Coordinator) prune(now time.Time) {
 	for id, j := range c.jobs {
-		if !j.running && now.Sub(j.doneAt) > c.o.Window {
+		if (!j.running && now.Sub(j.doneAt) > c.o.Window) || (j.running && !j.runningAt(now)) {
 			delete(c.jobs, id)
 		}
 	}
@@ -372,14 +400,14 @@ func (c *Coordinator) step(now time.Time) (acts actions) {
 	if !c.quiet && !now.Before(c.quietAt) {
 		c.quiet = true
 	}
-	if c.want[CalibreWeb] && c.quiet && !c.reconnecting {
+	if c.want[CalibreWeb] && !c.reconnecting && (c.quiet || !now.Before(c.since[CalibreWeb].Add(c.o.Cap))) {
 		c.want[CalibreWeb] = false
 		c.reconnecting = true
 		c.apps[CalibreWeb].reloading = true
 		acts.reconnect = true
 	}
 	if c.want[ContentServer] && !c.restarting {
-		capped := !now.Before(c.since.Add(c.o.Cap))
+		capped := !now.Before(c.since[ContentServer].Add(c.o.Cap))
 		idle := c.apps[ContentServer].requests == 0 && !c.converting(now)
 		if capped || (c.quiet && idle) {
 			c.want[ContentServer] = false
@@ -393,8 +421,8 @@ func (c *Coordinator) step(now time.Time) (acts actions) {
 }
 
 // arm sets the timer for the next moment a reload may fall due: the end of
-// the quiet time, the cap on a restart's wait, or the end of a conversion
-// whose id could not be read. The caller holds the lock.
+// the quiet time, the cap on a reload's wait, or the moment a conversion
+// stops counting. The caller holds the lock.
 func (c *Coordinator) arm(now time.Time) {
 	var next time.Time
 	soonest := func(t time.Time) {
@@ -405,10 +433,18 @@ func (c *Coordinator) arm(now time.Time) {
 	if (c.want[ContentServer] || c.want[CalibreWeb]) && !c.quiet {
 		soonest(c.quietAt)
 	}
+	if c.want[CalibreWeb] && !c.reconnecting {
+		soonest(c.since[CalibreWeb].Add(c.o.Cap))
+	}
 	if c.want[ContentServer] && !c.restarting {
-		soonest(c.since.Add(c.o.Cap))
+		soonest(c.since[ContentServer].Add(c.o.Cap))
 		for _, s := range c.unread {
 			soonest(s.Add(c.o.Cap))
+		}
+		for _, j := range c.jobs {
+			if j.running {
+				soonest(j.heard.Add(abandonedAfter))
+			}
 		}
 	}
 	if c.timer != nil && next.Equal(c.timerAt) {

@@ -8,6 +8,7 @@ import (
 	"context"
 	"net/http"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -332,10 +333,18 @@ func TestWaitsForConversion(t *testing.T) {
 // after the change that called for it.
 func TestCap(t *testing.T) {
 	t.Parallel()
-	for name, busy := range map[string]func(h *harness){
-		"a conversion that never ends": func(h *harness) { h.c.ConversionStarted(5) },
-		"a request that never ends": func(h *harness) {
-			h.c.RequestStarted(ContentServer, http.MethodGet, "/get/EPUB/12")
+	for name, tt := range map[string]struct {
+		start func(h *harness)
+		tick  func(h *harness) // each minute
+	}{
+		"a conversion that never ends": {
+			start: func(h *harness) { h.c.ConversionStarted(5) },
+			// Polled, so it is not left behind
+			tick: func(h *harness) { h.poll(5, true) },
+		},
+		"a request that never ends": {
+			start: func(h *harness) { h.c.RequestStarted(ContentServer, http.MethodGet, "/get/EPUB/12") },
+			tick:  func(*harness) {},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -344,13 +353,140 @@ func TestCap(t *testing.T) {
 			h.running()
 			start := h.clk.Now()
 			h.write(CalibreWeb)
-			busy(h)
-			h.clk.Advance(10*time.Minute - time.Millisecond)
+			tt.start(h)
+			for range 9 {
+				h.clk.Advance(time.Minute)
+				tt.tick(h)
+			}
+			h.clk.Advance(time.Minute - time.Millisecond)
 			h.expect(0, 0)
 			h.clk.Advance(time.Hour)
 			h.expect(0, 1)
 			if _, restarts := h.r.times(); len(restarts) > 0 && !restarts[0].Equal(start.Add(10*time.Minute)) {
 				t.Errorf("restarted %s after the change, want 10m0s", restarts[0].Sub(start))
+			}
+		})
+	}
+}
+
+// poll is calibre-server answering a status poll for jobID.
+func (h *harness) poll(jobID int, running bool) {
+	body := `{"running": true, "percent": 0.5, "msg": "Converting"}`
+	if !running {
+		body = `{"running": false, "ok": true, "was_aborted": false, "traceback": "", "log": "", "size": 100, "fmt": "mobi"}`
+	}
+	h.c.Answered(http.MethodPost, "/conversion/status/"+strconv.Itoa(jobID), http.StatusOK, nil, []byte(body), true)
+}
+
+// TestReconnectCap is calibre-server changing the library every 2 s, so
+// that it is never quiet for 5: Calibre-Web still reconnects, 10 minutes
+// after the first change.
+func TestReconnectCap(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.running()
+	start := h.clk.Now()
+	for h.clk.Now().Before(start.Add(11 * time.Minute)) {
+		h.write(ContentServer)
+		h.clk.Advance(2 * time.Second)
+	}
+	reconnects, restarts := h.r.times()
+	if len(reconnects) != 1 || len(restarts) != 0 {
+		t.Fatalf("%d reconnects and %d restarts in 11 minutes, want one reconnect", len(reconnects), len(restarts))
+	}
+	if !reconnects[0].Equal(start.Add(10 * time.Minute)) {
+		t.Errorf("reconnected %s after the first change, want 10m0s", reconnects[0].Sub(start))
+	}
+}
+
+// TestGateLetsConversionPollsThrough is port 8080 while a restart is to
+// come: a conversion's status poll still goes on, so the conversion can
+// end, and the poll that hears it ended write its format, while other
+// requests that change the library are refused. While the restart runs,
+// both are refused.
+func TestGateLetsConversionPollsThrough(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.running()
+	poll, write := "/conversion/status/5", "/cdb/set-fields/12"
+	denied := func(path string) bool {
+		deny, _, _ := h.c.Gate(ContentServer, http.MethodPost, path)
+		return deny
+	}
+	h.c.ConversionStarted(5)
+	h.write(CalibreWeb)
+	if denied(poll) || !denied(write) {
+		t.Errorf("while a restart is to come: the poll refused %t, the write refused %t; want false, true", denied(poll), denied(write))
+	}
+	h.clk.Advance(time.Minute)
+	h.expect(1, 0) // waiting for the conversion
+
+	done := h.c.RequestStarted(ContentServer, http.MethodPost, poll)
+	h.poll(5, false)
+	h.change() // the new format
+	done(http.StatusOK)
+	h.clk.Advance(6 * time.Second)
+	h.expect(2, 1) // Calibre-Web sees the format; calibre-server restarts for Calibre-Web's write
+	if !denied(poll) || !denied(write) {
+		t.Errorf("while the restart runs: the poll refused %t, the write refused %t; want both", denied(poll), denied(write))
+	}
+}
+
+// TestAbandonedConversion is a conversion whose page was left: calibre-
+// server forgets one that no poll has asked about for 360 s, and so does
+// the Coordinator; it holds a restart back until then, and no longer.
+func TestAbandonedConversion(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		// run starts and polls the conversion, and writes from Calibre-Web,
+		// and returns when the conversion was last heard of
+		run func(h *harness) time.Time
+	}{
+		{"left after a poll", func(h *harness) time.Time {
+			h.c.Answered(http.MethodPost, "/conversion/start/12", http.StatusOK, nil, []byte("5"), true)
+			h.clk.Advance(time.Minute)
+			h.poll(5, true)
+			last := h.clk.Now()
+			h.clk.Advance(10 * time.Second)
+			h.write(CalibreWeb)
+			return last
+		}},
+		{"never polled", func(h *harness) time.Time {
+			h.c.Answered(http.MethodPost, "/conversion/start/12", http.StatusOK, nil, []byte("5"), true)
+			last := h.clk.Now()
+			h.clk.Advance(10 * time.Second)
+			h.write(CalibreWeb)
+			return last
+		}},
+		{"polled again later", func(h *harness) time.Time {
+			h.c.Answered(http.MethodPost, "/conversion/start/12", http.StatusOK, nil, []byte("5"), true)
+			h.clk.Advance(290 * time.Second)
+			h.write(CalibreWeb)
+			h.clk.Advance(10 * time.Second)
+			h.poll(5, true)
+			return h.clk.Now()
+		}},
+		{"polled, its start not seen", func(h *harness) time.Time {
+			h.write(CalibreWeb)
+			h.clk.Advance(time.Second)
+			h.poll(7, true)
+			return h.clk.Now()
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			h.running()
+			last := tt.run(h)
+			h.clk.Advance(last.Add(359 * time.Second).Sub(h.clk.Now()))
+			if _, restarts := h.r.counts(); restarts != 0 {
+				t.Fatalf("restarted while the conversion was still heard of 359 s ago")
+			}
+			h.clk.Advance(time.Second)
+			_, restarts := h.r.times()
+			if len(restarts) != 1 || !restarts[0].Equal(last.Add(360*time.Second)) {
+				t.Errorf("restarts at %v, want one 360 s after the conversion was last heard of", restarts)
 			}
 		})
 	}

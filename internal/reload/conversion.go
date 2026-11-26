@@ -32,6 +32,13 @@ func conversionRequest(method, path string) (kind, id string) {
 	return "", ""
 }
 
+// isStatusPoll reports whether a request asks calibre-server for a
+// conversion's status.
+func isStatusPoll(method, path string) bool {
+	kind, _ := conversionRequest(method, path)
+	return kind == "status"
+}
+
 // Watched reports whether the Coordinator reads calibre-server's answer to
 // a request: the start of a conversion, or a conversion's status.
 func Watched(method, path string) bool {
@@ -45,9 +52,10 @@ func Watched(method, path string) bool {
 //
 // A start that calibre-server took answers with the job's id. When the id
 // cannot be read, the conversion counts as running for Cap. A status that
-// says "running": false ends the job: calibre-server answers it once,
-// before anything else, and writes the new format to the library while it
-// does.
+// says "running": true keeps the job counting, whether or not its start
+// was seen. A status that says "running": false ends the job:
+// calibre-server answers it once, before anything else, and writes the new
+// format to the library while it does.
 func (c *Coordinator) Answered(method, path string, status int, header http.Header, body []byte, whole bool) {
 	kind, id := conversionRequest(method, path)
 	if kind == "" || status < 200 || status > 299 {
@@ -62,7 +70,13 @@ func (c *Coordinator) Answered(method, path string, status int, header http.Head
 		return
 	}
 	jobID, err := strconv.Atoi(id)
-	if err == nil && stoppedRunning(header, body) {
+	if err != nil {
+		return
+	}
+	switch running, ok := readRunning(header, body); {
+	case ok && running:
+		c.conversionRuns(jobID)
+	case ok:
 		c.ConversionDone(jobID)
 	}
 }
@@ -100,31 +114,32 @@ func readJobID(header http.Header, body []byte, whole bool) (int, bool) {
 	return *id, true
 }
 
-// stoppedRunning reports whether the answer to a status poll is a JSON
-// object whose "running" is false. It reads the object a field at a time,
-// so the start of a long answer is enough.
-func stoppedRunning(header http.Header, body []byte) bool {
-	r, ok := unpacked(header, body)
-	if !ok {
-		return false
+// readRunning reads the "running" of the answer to a status poll, a JSON
+// object; ok is false when it holds no boolean there. It reads the object a
+// field at a time, so the start of a long answer is enough.
+func readRunning(header http.Header, body []byte) (running, ok bool) {
+	r, unpackedOK := unpacked(header, body)
+	if !unpackedOK {
+		return false, false
 	}
 	dec := json.NewDecoder(r)
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
-		return false
+		return false, false
 	}
 	for dec.More() {
 		key, err := dec.Token()
 		if err != nil {
-			return false
+			return false, false
 		}
 		if key == "running" {
 			v, err := dec.Token()
-			return err == nil && v == false
+			b, isBool := v.(bool)
+			return b, err == nil && isBool
 		}
 		var skip json.RawMessage
 		if err := dec.Decode(&skip); err != nil {
-			return false
+			return false, false
 		}
 	}
-	return false
+	return false, false
 }
