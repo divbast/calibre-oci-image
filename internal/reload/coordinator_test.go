@@ -869,3 +869,172 @@ func TestReconnectTimeout(t *testing.T) {
 		t.Errorf("%d reconnects, want 2", n)
 	}
 }
+
+// wrote is a request to app that changed things and has ended, its change
+// to the library not seen yet.
+func (h *harness) wrote(app App) {
+	path := "/cdb/set-fields/12"
+	if app == CalibreWeb {
+		path = "/admin/book/12"
+	}
+	h.c.RequestStarted(app, http.MethodPost, path)(http.StatusOK)
+}
+
+// TestEditDuringReload is a real edit by one app while the other is
+// reloaded: an edit made once the reload has begun, or once the new
+// process has started, is not one the reload reads, so it reloads that app
+// again; an edit made before the new process started is in what it reads,
+// so it does not.
+func TestEditDuringReload(t *testing.T) {
+	t.Parallel()
+	t.Run("Calibre-Web edits after the new calibre-server accepts", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		var start int
+		h.r.during = func(app App) {
+			if app == ContentServer && start == 0 {
+				h.change()
+				start = h.c.Started(ContentServer)
+				h.change()
+			}
+		}
+		h.write(CalibreWeb)
+		h.clk.Advance(5 * time.Second)
+		h.expect(0, 1)
+		h.clk.Advance(time.Second)
+		h.c.Accepting(ContentServer, start)
+		h.clk.Advance(2 * time.Second) // 3 s into the restart, within its own time
+		h.wrote(CalibreWeb)
+		h.clk.Advance(500 * time.Millisecond)
+		h.change()
+		h.clk.Advance(time.Hour)
+		h.expect(0, 2)
+	})
+	t.Run("Calibre-Web edits while the new calibre-server starts", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		var start int
+		h.r.during = func(app App) {
+			if app == ContentServer && start == 0 {
+				start = h.c.Started(ContentServer)
+			}
+		}
+		h.write(CalibreWeb)
+		h.clk.Advance(5 * time.Second)
+		h.expect(0, 1)
+		h.clk.Advance(2 * time.Second)
+		h.wrote(CalibreWeb)
+		h.clk.Advance(500 * time.Millisecond)
+		h.change()
+		if deny, _, _ := h.c.Gate(ContentServer, http.MethodGet, "/ajax/books"); !deny {
+			t.Error("port 8080 serves while calibre-server restarts")
+		}
+		h.clk.Advance(time.Second)
+		h.c.Accepting(ContentServer, start)
+		h.clk.Advance(time.Hour)
+		h.expect(0, 2)
+	})
+	t.Run("Calibre-Web edits before the new calibre-server starts", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		h.write(CalibreWeb)
+		h.clk.Advance(5 * time.Second)
+		h.expect(0, 1)
+		h.clk.Advance(time.Second)
+		h.wrote(CalibreWeb) // while the old process stops
+		h.clk.Advance(500 * time.Millisecond)
+		h.change()
+		h.clk.Advance(time.Second)
+		start := h.c.Started(ContentServer)
+		h.change()
+		h.clk.Advance(time.Second)
+		h.c.Accepting(ContentServer, start)
+		h.clk.Advance(time.Hour)
+		h.expect(0, 1)
+	})
+	t.Run("calibre-server writes during Calibre-Web's reconnect", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		n := 0
+		h.r.during = func(app App) {
+			if app == CalibreWeb && n == 0 {
+				n++
+				h.clk.Advance(time.Second)
+				h.wrote(ContentServer)
+				h.clk.Advance(500 * time.Millisecond)
+				h.change()
+			}
+		}
+		h.write(ContentServer)
+		h.clk.Advance(5 * time.Second)
+		h.clk.Advance(time.Hour)
+		h.expect(2, 0)
+	})
+}
+
+// TestCrashDuringRestart is the process a restart started ending before
+// its port accepts, and the supervisor starting another: only that last
+// start opens port 8080 again, and Calibre-Web's edit made after the first
+// new start is in what the last one reads, so no other restart follows.
+func TestCrashDuringRestart(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.running()
+	var first int
+	h.r.during = func(app App) {
+		if app == ContentServer && first == 0 {
+			first = h.c.Started(ContentServer)
+		}
+	}
+	h.write(CalibreWeb)
+	h.clk.Advance(5 * time.Second)
+	h.expect(0, 1)
+	h.clk.Advance(time.Second)
+	h.write(CalibreWeb) // a real edit, after the first new start
+	h.clk.Advance(time.Second)
+	second := h.c.Started(ContentServer)
+	refused := func() bool {
+		deny, _, _ := h.c.Gate(ContentServer, http.MethodGet, "/")
+		return deny
+	}
+	h.c.Accepting(ContentServer, first)
+	if !refused() {
+		t.Error("port 8080 serves once the start that ended accepts")
+	}
+	h.clk.Advance(time.Second)
+	h.c.Accepting(ContentServer, second)
+	if refused() {
+		t.Error("port 8080 refuses requests once the last start accepts")
+	}
+	h.clk.Advance(time.Hour)
+	h.expect(0, 1)
+}
+
+// lateReconnect is a Calibre-Web that answers its reconnect just as the
+// time for it runs out.
+type lateReconnect struct{ clk *fakeClock }
+
+func (r lateReconnect) ReconnectCalibreWeb(context.Context) error {
+	r.clk.Advance(reconnectTimeout)
+	return nil
+}
+
+func (lateReconnect) RestartContentServer(context.Context) error { return nil }
+
+// TestReconnectAnswersAtDeadline is a reconnect that answers 200 at the
+// moment its 10 s end: it worked, so nothing is logged.
+func TestReconnectAnswersAtDeadline(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.c.r = lateReconnect{h.clk}
+	h.running()
+	h.write(ContentServer)
+	h.clk.Advance(5 * time.Second)
+	if got := h.log.String(); got != "" {
+		t.Errorf("a reconnect that answered logged %q", got)
+	}
+}

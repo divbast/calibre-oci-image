@@ -61,10 +61,13 @@ func SystemClock() Clock { return systemClock{} }
 
 // Reloader reloads each app.
 type Reloader interface {
-	// ReconnectCalibreWeb has Calibre-Web open the library again.
+	// ReconnectCalibreWeb has Calibre-Web open the library again. It must
+	// return once ctx ends: the Coordinator ends ctx when the reconnect
+	// has taken 10 s, and when it stops.
 	ReconnectCalibreWeb(ctx context.Context) error
 	// RestartContentServer restarts calibre-server, and returns once it
-	// has been started again.
+	// has been started again, or once the supervisor stops. The
+	// Coordinator sets it no time limit; it ends ctx when it stops.
 	RestartContentServer(ctx context.Context) error
 }
 
@@ -533,7 +536,7 @@ func (c *Coordinator) reconnect() {
 	timer := c.clk.AfterFunc(reconnectTimeout, func() { cancel(errReconnectTimeout) })
 	err := c.r.ReconnectCalibreWeb(ctx)
 	timer.Stop()
-	if errors.Is(context.Cause(ctx), errReconnectTimeout) {
+	if err != nil && errors.Is(context.Cause(ctx), errReconnectTimeout) {
 		err = errReconnectTimeout
 	}
 	cancel(nil)
