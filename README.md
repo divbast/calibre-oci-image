@@ -439,14 +439,42 @@ library, and before you move to a new image.
 
 ### `/tmp`
 
-Calibre keeps its temporary files and its cache in `/tmp`, through
-`CALIBRE_TEMP_DIR` and `CALIBRE_CACHE_DIRECTORY`, and PID 1 keeps its
-state file there, `/tmp/divbast-calibre/state.json`. The examples give it
-2 GiB. <!-- tmp-size --> In the image's measurements, uploads,
-conversions, covers and thumbnails used at most 432 KiB of it.
-ImageMagick's own policy lets it write up to 2 GiB of temporary files
-there. A tmpfs keeps its files in memory, so what `/tmp` holds counts as
-the container's memory.
+Calibre-Web, and the Calibre programs it runs, keep their temporary files
+in `/tmp`, Calibre's cache is there, through `CALIBRE_CACHE_DIRECTORY`,
+and PID 1 keeps its state file there, `/tmp/divbast-calibre/state.json`.
+The examples give it 2 GiB. <!-- tmp-size --> A tmpfs keeps its files in
+memory, so what `/tmp` holds counts as the container's memory.
+
+The Content Server keeps its own temporary files in
+`/config/calibre/tmp` instead, through `CALIBRE_TEMP_DIR`. A book added
+through it leaves four copies there, which the Content Server deletes
+only when it stops: three while it runs, one for a few seconds. PID 1
+empties that folder before each start of the Content Server, and never
+while it runs.
+
+In the image's measurements:
+
+- a 300 MiB book added through port 8080 grew `/tmp` by under 16 MiB, and
+  left 900 MiB in `/config/calibre/tmp` until the Content Server's next
+  restart;
+- the same book uploaded through port 8083 held 600 MiB of `/tmp` at the
+  most, for two copies, while Calibre-Web took it, and nothing after;
+- Calibre-Web's cover of a PDF uses `/tmp` too, about 25 bytes for each
+  pixel of the first page at 150 dots an inch: 1.2 GiB for a page 49
+  inches square. ImageMagick's own policy lets it write up to 2 GiB of
+  temporary files there. <!-- tmp-size -->
+
+### Uploads
+
+- **Port 8080**, the Content Server, takes a book of up to 500 MiB, its
+  own limit, `--max-request-body-size`, which the image keeps. PID 1
+  answers a larger one itself with the Content Server's
+  `413 Request Entity Too Large`, so that the reason reaches the browser.
+  The Content Server's copies go to `/config`, so the volume needs room
+  for four times the book.
+- **Port 8083**, Calibre-Web, sets no limit of its own: a book of about
+  1 GiB fits, since it holds two copies in the 2 GiB `/tmp` while it takes
+  it. <!-- tmp-size -->
 
 ## Configuration
 
@@ -547,12 +575,36 @@ conversion can end. During the restart itself, port 8080 answers 503 to
 every request. A planned restart of the Content Server counts as healthy
 for up to 2 minutes.
 
+PID 1 sees a change at its next look, up to a second after it. In that
+second, a change made through port 8080 to a book Calibre-Web has just
+changed is not yet refused. In the image's tests the library stayed whole
+each time, and both apps showed the later change.
+
 Calibre allows one program to open a library at a time, and the Content
 Server has it open. So Calibre-Web's calls to Calibre's `calibredb`,
 which it makes to download a book with its metadata written in and before
 it converts a book, go to the image's `calibredb`, which sends them to the
 Content Server as the read-only user `calibre-web`. It refuses every other
-call.
+call. Such a call must read the library as Calibre-Web has just changed
+it, so PID 1 holds it while a restart of the Content Server waits, or
+runs, and passes it on once the new Content Server answers:
+
+- PID 1 first looks at the library at once, so that a change made just
+  before the call counts.
+- A restart that waits then goes ahead at once, without its 5 seconds of
+  quiet, but still only when no other request to the Content Server is
+  being answered.
+- While a conversion in the Content Server runs, the call is not held,
+  and reads what the Content Server has, since the restart would wait
+  for the conversion.
+- PID 1 knows such a call by two signs together: it comes from inside
+  the container, on the loopback, and logs in as `calibre-web`.
+- Calibre-Web reads a book this way before it converts it, and adds the
+  new format afterwards, so PID 1 counts such a call as Calibre-Web's
+  own: the change that follows restarts the Content Server. A Kobo's first
+  sync converts each EPUB to KEPUB, and so restarts the Content Server
+  once a book. With 20 books, that was 20 restarts in 27 seconds, and
+  port 8080 answered 503 to almost half the requests meanwhile.
 
 ### Behind a reverse proxy
 
@@ -616,7 +668,11 @@ it, on loopback.
 
 - **Calibre-Web's updater** (`UPDATER_AVAILABLE = False`), as upstream's
   packaged builds do: the image's files are read-only, and a new
-  Calibre-Web arrives as a new image.
+  Calibre-Web arrives as a new image. This is one of the two lines the
+  build changes in Calibre-Web. The other lets an upload named `.cbr` be a
+  RAR archive that the image's libmagic names `application/vnd.rar`,
+  beside the `application/x-rar` Calibre-Web looks for, so that a CBR
+  comic can be uploaded.
 - **The Content Server's Bonjour announcement** (`--disable-use-bonjour`):
   it would announce the container's own address, which other devices on
   your network cannot reach. With it off, nothing in the image listens on
@@ -637,10 +693,21 @@ it, on loopback.
 
 ### PDF output
 
-Calibre makes a PDF with QtWebEngine, Chromium's engine, under its default
-sandbox: a seccomp-bpf filter on each process that draws pages. The
-sandbox's other layer, namespaces of its own, cannot start under the
-image's restrictions, and Calibre's log says so.
+Calibre makes a PDF with QtWebEngine, Chromium's engine, and each process
+that draws pages runs under Chromium's seccomp-bpf sandbox. The image sets
+`QTWEBENGINE_CHROMIUM_FLAGS` to `--disable-gpu --disable-namespace-sandbox
+--disable-dev-shm-usage`:
+
+- the namespace sandbox, Chromium's other layer, cannot start under
+  Docker's restrictions, and under rootless Podman it starts, then fails,
+  and stops the PDF;
+- shared memory goes to `/tmp`, since Podman, run as above, mounts
+  `/dev/shm` read-only;
+- there is no GPU, and Qt turns it off itself only while the variable is
+  unset.
+
+A value of your own replaces the image's. Keep `--disable-gpu` in it, or
+every PDF fails, and keep the other two under Podman.
 
 ### ImageMagick
 

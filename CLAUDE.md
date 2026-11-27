@@ -99,7 +99,13 @@ is a breaking change.
   -r -o /dev/stdout`. Never `--enable-local-write` or `--trusted-ips`: the
   Content Server sees every request come from 127.0.0.1. `-r` turns on
   Calibre-Web's `/reconnect`, which PID 1 alone calls, and to which 8083
-  answers 404
+  answers 404. calibre-server alone gets `CALIBRE_TEMP_DIR=
+  /config/calibre/tmp`, in place of the image's `/tmp`: an add through
+  8080 leaves its copies there until calibre-server ends (four at once,
+  three after, of a 300 MiB book: 1.2 GiB, then 900 MiB). The
+  supervisor's `Before` makes that folder afresh, 0700, before each
+  calibre-server start, first, crash and planned alike, and never while it
+  runs. Everything else keeps `/tmp`. Never `QTWEBENGINE_DISABLE_SANDBOX`
 - **The supervisor's times are the user's**: a child that ends on its own
   starts again after 1 s, doubling to 60 s, back to 1 s after 10 minutes
   up. A stop gives each child 8 s after SIGTERM, then SIGKILL to its
@@ -118,7 +124,41 @@ is a breaking change.
   library, but `POST /conversion/status/<id>`, with 503, `Retry-After: 10`
   and one line; while it runs, 8080 refuses every request. A planned
   restart counts as healthy for under 2 minutes of downtime. Every number
-  here is the user's: a new one goes to the user first
+  here is the user's: a new one goes to the user first. In the second
+  before PID 1's next look, an 8080 write after a Calibre-Web edit still
+  goes through: the 1 s is the user's number, and in every test the
+  library stayed whole. The probe can pass up to a second before 8080's
+  gate opens after a restart: PID 1 opens it at its next 1 s look at
+  calibre-server's port, and the probe asks that port directly. Both are
+  accepted as they are
+- **Calibre-Web's own calibredb calls are held, not refused** (R39, R40).
+  On 8080, a request from a loopback peer, logged in by Digest as
+  `calibre-web` (both signs, never one), is the wrapper's: PID 1 looks at
+  `metadata.db` at once, then holds the request while a restart is to
+  come or runs, and passes it on once the new calibre-server takes
+  connections. A restart to come then skips its 5 s of quiet, but still
+  waits until no other 8080 request is open. While a tracked conversion
+  runs, the request is not held, and one held is let go when a conversion
+  starts, so a held request never waits for a conversion. Without this a
+  download right after a Calibre-Web edit answered 404 for 5.5 s, then
+  came without its metadata, and a KEPUB conversion failed. Each such
+  request also counts as one of Calibre-Web's that can change the
+  library, open and for 10 s after: Calibre-Web converts in the
+  background, with no request of its own open, reading the book through
+  `calibredb` first, and its write would otherwise fall in calibre-server's
+  own start after the restart the read brought on, and be lost (a Kobo's
+  first sync of 20 EPUBs left the Content Server without the last
+  KEPUBs). So a first sync restarts calibre-server once a book: 20
+  restarts in 27 s, 0.21 s down each, and 83 of 186 reads through 8080
+  answered 503 meanwhile. The first, unauthenticated request of each
+  `calibredb` call carries neither login sign, so during a restart it
+  still gets 503
+- **8080 answers a body past calibre-server's own limit itself**: a
+  `Content-Length` over 524,288,000 bytes, calibre-server's 500 MB
+  default `--max-request-body-size`, which the image keeps, gets 413 with
+  calibre-server's own words. calibre-server answers before it reads the
+  body and closes, so through the proxy the client saw an empty 502 about
+  one time in four. A chunked body goes on, for calibre-server to count
 - **Forwarded headers come only from `TRUSTED_PROXIES`.** From a listed
   source PID 1 keeps `Forwarded`, `X-Forwarded-*`, `X-Real-IP`,
   `X-Scheme`, `X-Script-Name` and Calibre-Web's login header, in any
@@ -176,9 +216,14 @@ or read in upstream's source where the line says so:
   8 ms
 - The image: 2.34 GB on disk and 585 MB compressed on arm64, 2.37 GB and
   596 MB on amd64. Calibre's bundle is about 870 MiB of it
-- `/tmp` peaked at 432 KiB through uploads, EPUB to PDF and to MOBI,
-  covers and thumbnails. ImageMagick's own disk limit, from upstream's
-  secure policy, is 2 GiB, as large as `/tmp` <!-- tmp-size -->
+- `/tmp`, at 2 GiB <!-- tmp-size -->: a 300 MiB add through 8080 grows
+  it by under 16 MiB, its copies going to `/config/calibre/tmp`; a 300 MiB
+  upload through 8083 holds 600 MiB of it, two copies, while Calibre-Web
+  takes it, so 8083 takes about 1 GiB (1,100 MiB failed: "could not saved
+  to temp dir"), and 8080 its own 500 MiB. A PDF cover takes about 25
+  bytes of it a pixel, at 150 dpi: 1.2 GiB for a 3,500-point page; a
+  3,900-point one fails to the generic cover. ImageMagick's own disk
+  limit, from upstream's secure policy, is 2 GiB, as large as `/tmp`
 - No `/config` mount: exit 1 at once, `Calibre and Calibre-Web cannot
   write /config: give it, and everything in it, to uid 65532, … : open
   /config/.writable.…: read-only file system`; the same for `/books`. A
@@ -224,6 +269,16 @@ or read in upstream's source where the line says so:
 - EPUB to PDF in the Content Server: 2.1 s on arm64 and 3.1 s on amd64,
   with no Mesa. Leaving Mesa, LLVM and z3 out saved 254 MB on disk and
   changed no result
+- Chromium needs the image's `QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu
+  --disable-namespace-sandbox --disable-dev-shm-usage"`. Under rootless
+  Podman, without the second, its namespace sandbox starts and then
+  aborts on `sys_chroot("/proc/self/fdinfo/")`; without the third, it
+  aborts on the read-only `/dev/shm` that `--read-only-tmpfs=false`
+  leaves. Any value without the first aborts PDF output everywhere
+  ("GLOzone not found for unknown"): Qt turns the GPU off itself only
+  while the variable is unset. With all three, each page-drawing process
+  logs "Activated seccomp-bpf sandbox for process type: renderer" on
+  both engines
 - Without libc-bin's `C.utf8`, Qt warned of a `C` locale at every
   calibre-server start; with it, never. Calibre names its folders and
   files in ASCII, and Calibre-Web in Unicode, whatever the locale; each
@@ -269,10 +324,15 @@ or read in upstream's source where the line says so:
   (`https://github.com/kovidgoyal.gpg`, calibre-ebook.com's signatures),
   export it into `keys/calibre-release.asc`, and change the fingerprint in
   the Containerfile, in one commit a person makes and signs
-- **Calibre-Web is changed in one line.** The `sed` of
+- **Calibre-Web is changed in two lines.** The `sed` of
   `UPDATER_AVAILABLE = True` must change exactly one line of
   `cps/constants.py`, and `NIGHTLY_VERSION[0]` must name
-  `CALIBRE_WEB_COMMIT`. Its `test/` and `.github/` do not ship
+  `CALIBRE_WEB_COMMIT`. The `sed` of `cps/file_helper.py`'s
+  `allowed_mimetypes.append(…)` must change exactly one line, so that a
+  `.cbr` may also be `application/vnd.rar`: the type the image's libmagic
+  gives a RAR archive, where Calibre-Web asks for `application/x-rar`
+  alone and refused every genuine CBR. Its `test/` and `.github/` do not
+  ship
 - **The Python packages come from the locks alone**, as SABnzbd's: every
   file by sha256 with curl, then `--network=none`. Source releases build
   with `--no-build-isolation --check-build-dependencies`, from a build
