@@ -5,10 +5,12 @@ package acceptance
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/csv"
 	"fmt"
 	"maps"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -203,6 +205,28 @@ func webGone(ctx context.Context, w *webSession, id int) error {
 		err = fmt.Errorf("calibre-web answers %d for book %d", resp.Status, id)
 	}
 	return err
+}
+
+// libraryFileCode prints, in base64, the one file of book sys.argv[1]
+// with the extension sys.argv[2] in the library, as calibre and
+// Calibre-Web lay it out: /books/<author>/<title> (<id>)/<file>.
+const libraryFileCode = `
+import base64, glob, sys
+paths = glob.glob("/books/*/* (%s)/*.%s" % (sys.argv[1], sys.argv[2]))
+if len(paths) != 1:
+    sys.exit("%d files: %r" % (len(paths), paths))
+with open(paths[0], "rb") as f:
+    sys.stdout.write(base64.b64encode(f.read()).decode())
+`
+
+// libraryFile returns book id's file with the extension ext, as it is in
+// the library in c.
+func libraryFile(ctx context.Context, c *harness.Container, id int, ext string) ([]byte, error) {
+	out, err := inPython(ctx, c, libraryFileCode, strconv.Itoa(id), ext)
+	if err != nil {
+		return nil, err
+	}
+	return base64.StdEncoding.DecodeString(out)
 }
 
 // webHasFormat is an error unless Calibre-Web offers book id in format.
@@ -602,8 +626,9 @@ const downloadsFor = 12 * time.Second
 // calibre-server, by calibredb's export, which PID 1 holds for a restart
 // that it brings forward, so that calibre-server reads the library as it
 // is: every download, from the first, has the new title written in, and
-// none is refused or missing. A KEPUB conversion right after an edit
-// works.
+// none is refused or missing. A conversion to KEPUB right after an edit
+// reads the book the same way, so the KEPUB it writes to the library has
+// the new title in it too.
 func TestReadsAfterEdit(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
@@ -644,14 +669,19 @@ func TestReadsAfterEdit(t *testing.T) {
 		}
 		const title = "Edited Before A Conversion"
 		editTitle(tb, b.web, 2, title)
-		// Only that the conversion works: a conversion may carry the
-		// book's metadata from before the edit, since PID 1 does not hold
-		// calibredb's show_metadata, which Calibre's own conversions read
-		// first. A KEPUB's reads through export are held as a download's
+		// Calibre-Web reads the book for kepubify through calibredb's
+		// export alone, which PID 1 holds as a download's. The file is read
+		// from the library as Calibre-Web wrote it: a download would write
+		// the metadata in again
 		if err := b.web.convert(ctx, 2, "EPUB", "KEPUB"); err != nil {
 			tb.Fatal(err)
 		}
+		checks := harness.NewChecks(tb)
 		err := within(ctx, convertWithin, func(ctx context.Context) error { return webHasFormat(ctx, b.web, 2, "KEPUB") })
-		harness.NewChecks(tb).True("Calibre-Web converts the book to KEPUB right after its edit", err == nil, fmt.Sprint(err))
+		checks.True("Calibre-Web converts the book to KEPUB right after its edit", err == nil, fmt.Sprint(err))
+		kepub, err := libraryFile(ctx, b.s.C, 2, "kepub")
+		got, terr := epubOPFTitle(kepub)
+		checks.True("the KEPUB is in the library, with a title", err == nil && terr == nil, fmt.Sprintf("%v, %v", err, terr))
+		harness.Equal(checks, "the KEPUB's title, as in the library", title, got)
 	})
 }
