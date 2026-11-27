@@ -621,8 +621,10 @@ func TestTracker(t *testing.T) {
 		t.Errorf("started %v, want %v", f.started, want)
 	}
 	f.mu.Unlock()
+	// Each start's port is polled on a goroutine of its own, in any order
 	mu.Lock()
-	if want := []string{"127.0.0.1:18080", "127.0.0.1:18083", "127.0.0.1:18080"}; !slices.Equal(polled, want) {
+	slices.Sort(polled)
+	if want := []string{"127.0.0.1:18080", "127.0.0.1:18080", "127.0.0.1:18083"}; !slices.Equal(polled, want) {
 		t.Errorf("polled %q, want %q", polled, want)
 	}
 	mu.Unlock()
