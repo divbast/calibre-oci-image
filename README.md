@@ -602,10 +602,12 @@ seconds, until the Content Server has restarted with the edit in it:
   book may use the book's previous metadata: Calibre's own conversions
   read the metadata first, and that read does not wait.
 - A conversion to KEPUB reads the book as a download does, and waits
-  too. So bulk KEPUB conversion, as in a Kobo's first sync, restarts the
-  Content Server at most every 5 seconds: with 20 books, 20 restarts in
-  99 seconds, and port 8080 answered 503 to one request in five
-  meanwhile.
+  too. This has a cost. Converting many books to KEPUB in Calibre-Web,
+  mostly in a Kobo's first sync, which comes once for each device, takes
+  about 5 seconds a book: the Content Server restarts once for each book.
+  While those conversions run, the Content Server on port 8080 answers
+  503 to about one request in five. In the image's tests, 20 books took
+  99 seconds. Everyday use, a book at a time, does not notice it.
 - While a conversion in the Content Server runs, a download does not
   wait, and carries what the Content Server has: the restart would wait
   for the conversion.
