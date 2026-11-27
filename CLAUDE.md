@@ -74,7 +74,10 @@ is a breaking change.
   It checks that `/config`, `/books` with its `metadata.db`, and each of
   `/config/calibre` and `/config/calibre-web` that is there, with the
   files the apps write in it, are writable. It reads and checks each admin
-  password while its account is still to be made. Only then does it make,
+  password while its account is still to be made: a byte-order mark
+  anywhere, or a carriage return left once one `\n` or `\r\n` is taken off
+  a file's end, stops the start, before Calibre-Web's rules; nothing is
+  taken off quietly. Only then does it make,
   in order: `/config/calibre` and `/config/calibre-web` (0700); an empty
   library, by `calibredb --with-library /books list`, when `/books` holds
   no `metadata.db`; `users.sqlite`, with `admin` and the read-only

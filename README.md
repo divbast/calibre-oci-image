@@ -364,13 +364,20 @@ The two passwords come from:
 Each is needed only while its account is still to be made. The start
 refuses both forms of one set at once, an empty value, and an empty file.
 One newline at a file's end, `\n` or `\r\n`, is not part of the password.
-Both passwords must follow Calibre-Web's default password rules:
+Both passwords must follow Calibre-Web's default password rules, and two
+more, for what an editor can leave in a file without showing it:
 
 - at least 8 characters;
 - a digit, a lower-case letter and an upper-case letter;
 - a character that is not a letter, not white space and not a digit 0-9,
   such as `!` or `#`;
-- no line break.
+- no line break;
+- no byte-order mark (U+FEFF), which some editors write at the start of a
+  file;
+- no carriage return (`\r`), but in the one `\r\n` that may end a file.
+
+The start never takes such a character off, so the password is always the
+one you wrote.
 
 The Content Server's password must also hold no control character and no
 invisible formatting character, which Calibre refuses. A password that

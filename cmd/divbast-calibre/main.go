@@ -813,9 +813,10 @@ func writable(l layout) error {
 // password reads an admin password, but only when its account is still to
 // be made: name is the variable that holds the password, or names, with
 // _FILE after it, the file that does, and accounts is the file that holds
-// the account once it is made. The password must follow Calibre-Web's
-// default password rules. When accounts is there already, password reads
-// nothing and returns "".
+// the account once it is made. The password must hold no byte-order mark
+// and no carriage return, then follow Calibre-Web's default password
+// rules. When accounts is there already, password reads nothing and
+// returns "".
 func password(env func(string) string, name, accounts string) (string, error) {
 	_, err := os.Lstat(accounts)
 	switch {
@@ -826,6 +827,9 @@ func password(env func(string) string, name, accounts string) (string, error) {
 	}
 	pw, err := firststart.ReadSecret(env, name)
 	if err != nil {
+		return "", err
+	}
+	if err := firststart.CheckHidden(source(env, name), pw); err != nil {
 		return "", err
 	}
 	if err := firststart.CheckPassword(source(env, name), pw); err != nil {

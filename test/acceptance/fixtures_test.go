@@ -205,8 +205,8 @@ func (s *secrets) all() []string {
 }
 
 // noPassword checks that text, what a container or a process printed,
-// holds none of passwords, nor any part of one between its control
-// characters. It says how often it found one, never which one, or where.
+// holds none of passwords, nor any of their pieces (see pieces). It says
+// how often it found one, never which one, or where.
 // An empty password is a failure: it would be found nowhere, which proves
 // nothing.
 func noPassword(c *harness.Checks, what, text string, passwords []string) {

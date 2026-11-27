@@ -150,6 +150,50 @@ func TestCheckPassword(t *testing.T) {
 	}
 }
 
+// TestCheckHidden refuses what an editor can leave in a password file
+// without it showing: a byte-order mark anywhere, its start included, and
+// a carriage return that ReadSecret left, since it takes off only one \n
+// or \r\n at the end. The error is one line that names the variable and
+// what the password holds, and never the password.
+func TestCheckHidden(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, value string
+		reason      string // what the error says; none is wanted when this is empty
+	}{
+		{name: "neither", value: "Abcdefg1!"},
+		{name: "a byte-order mark at the start", value: "\uFEFFAbcdefg1!", reason: "starts with a byte-order mark"},
+		{name: "a byte-order mark inside", value: "Abcd\uFEFFefg1!", reason: "holds a byte-order mark"},
+		{name: "a byte-order mark at the end", value: "Abcdefg1!\uFEFF", reason: "holds a byte-order mark"},
+		{name: "a byte-order mark twice", value: "\uFEFF\uFEFFAbcdefg1!", reason: "starts with a byte-order mark"},
+		{name: "a carriage return at the end", value: "Abcdefg1!\r", reason: "holds a carriage return"},
+		{name: "a carriage return inside", value: "Abcd\refg1!", reason: "holds a carriage return"},
+		{name: "a line end left from two", value: "Abcdefg1!\r\n", reason: "holds a carriage return"},
+		{name: "a byte-order mark and a carriage return", value: "\uFEFFAbcdefg1!\r", reason: "starts with a byte-order mark"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := CheckHidden("PW_VAR", tt.value)
+			if tt.reason == "" {
+				if err != nil {
+					t.Errorf("CheckHidden() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("CheckHidden() = nil, want an error that says the password %s", tt.reason)
+			}
+			msg := err.Error()
+			if !strings.HasPrefix(msg, "PW_VAR: the password "+tt.reason) {
+				t.Errorf("CheckHidden() = %q, want it to begin %q", msg, "PW_VAR: the password "+tt.reason)
+			}
+			if strings.Contains(msg, "Abcd") || strings.Contains(msg, "\n") || strings.ContainsRune(msg, '\r') || strings.ContainsRune(msg, '\uFEFF') {
+				t.Errorf("CheckHidden() = %q, want one line without the password, or what it holds", msg)
+			}
+		})
+	}
+}
+
 // TestCheckCalibrePassword refuses a character of each kind Calibre's
 // Content Server refuses in a password: control characters, invisible
 // formatting characters, and line and paragraph separators. Calibre's

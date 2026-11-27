@@ -41,11 +41,13 @@ func TestRefusesWithoutPasswords(t *testing.T) {
 // holds an admin password to. Each is head, then n characters drawn at
 // random from set, then, when breaks is set, breaks and 10 more random
 // letters. Five are Calibre-Web's default rules, and a line break, which
-// no login form can send: the image holds both passwords to these. A
-// control character the Content Server refuses too, so only the admin
-// password of the Content Server is held to it. Calibre-Web's sixth rule,
-// a letter, cannot be broken alone: a password with a lower-case and an
-// upper-case letter has a letter.
+// no login form can send, and a byte-order mark at the start and a
+// carriage return, which an editor can leave in a file without them
+// showing: the image holds both passwords to these. A control character
+// the Content Server refuses too, so only the admin password of the
+// Content Server is held to it. Calibre-Web's sixth rule, a letter, cannot
+// be broken alone: a password with a lower-case and an upper-case letter
+// has a letter.
 var weakPasswords = []struct {
 	name, rule        string
 	head, set, breaks string
@@ -61,6 +63,8 @@ var weakPasswords = []struct {
 		"Aa1", lower + upper + digits, "", 20, false,
 	},
 	{"a line break", "must not hold a line break", "Aa1!", lower + upper + digits, "\n", 20, false},
+	{"a byte-order mark", "starts with a byte-order mark", "\uFEFFAa1!", lower + upper + digits, "", 20, false},
+	{"a carriage return", "holds a carriage return", "Aa1!", lower + upper + digits, "\r", 20, false},
 	{"a control character", "must not hold a control character", "Aa1!", lower + upper + digits, "\t", 20, true},
 }
 

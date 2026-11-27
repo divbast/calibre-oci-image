@@ -368,6 +368,49 @@ func TestServeOneLine(t *testing.T) {
 	}
 }
 
+// TestServeRefusesHidden is a password file with a byte-order mark at its
+// start, as some editors save one, or with a carriage return left after
+// its last line end: the start stops before it runs anything, with one
+// line that names the variable and what the password holds, and never the
+// password. Nothing is taken off the password quietly.
+func TestServeRefusesHidden(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, variable, content, reason string
+	}{
+		{"a byte-order mark, Calibre-Web's", "CALIBRE_WEB_ADMIN_PASSWORD", "\uFEFF" + webPW + "\n", "starts with a byte-order mark"},
+		{"a byte-order mark, the Content Server's", "CALIBRE_ADMIN_PASSWORD", "\uFEFF" + adminPW + "\r\n", "starts with a byte-order mark"},
+		{"a carriage return, Calibre-Web's", "CALIBRE_WEB_ADMIN_PASSWORD", webPW + "\r", "holds a carriage return"},
+		{"two line ends, the Content Server's", "CALIBRE_ADMIN_PASSWORD", adminPW + "\r\n\r\n", "holds a carriage return"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "secret")
+			if err := os.WriteFile(path, []byte(tt.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			environ := []string{"CALIBRE_ADMIN_PASSWORD=" + adminPW, "CALIBRE_WEB_ADMIN_PASSWORD=" + webPW}
+			environ = slices.DeleteFunc(environ, func(e string) bool { return strings.HasPrefix(e, tt.variable+"=") })
+			environ = append(environ, tt.variable+"_FILE="+path)
+			h := &helpers{t: t}
+			var stderr bytes.Buffer
+			if code := runServe(t.Context(), environ, h.run, newLayout(t), new(bytes.Buffer), &stderr, noApps(t)); code != 1 {
+				t.Errorf("runServe() = %d, want 1", code)
+			}
+			got := stderr.String()
+			if want := "divbast-calibre: " + tt.variable + "_FILE: the password " + tt.reason; strings.Count(got, "\n") != 1 || !strings.HasPrefix(got, want) {
+				t.Errorf("stderr = %q, want one line that begins %q", got, want)
+			}
+			if strings.Contains(got, adminPW) || strings.Contains(got, webPW) {
+				t.Error("stderr holds a password")
+			}
+			if len(h.calls) != 0 {
+				t.Errorf("first start ran %q", h.argv0s())
+			}
+		})
+	}
+}
+
 // TestConfigSymlinks is /config/calibre or /config/calibre-web as a
 // symbolic link: one to a directory is followed, as Calibre and
 // Calibre-Web follow it, and first start runs; one to nothing, or to a
