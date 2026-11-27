@@ -19,10 +19,7 @@ import (
 // and saying how to give it to the user, where Calibre or Calibre-Web
 // would stop later with a traceback.
 func Writable(dir string, files ...string) error {
-	uid := os.Getuid()
-	fix := func(what string) string {
-		return fmt.Sprintf("give %s, and everything in it, to uid %d, the user the image runs Calibre and Calibre-Web as, for example with chown -R %d:%d on the host's directory", what, uid, uid, os.Getgid())
-	}
+	fix := GiveHint
 	tmp, err := os.CreateTemp(dir, ".writable.*")
 	if err != nil {
 		return fmt.Errorf("Calibre and Calibre-Web cannot write %s: %s: %w", dir, fix("it"), err) //nolint:staticcheck // ST1005: the sentence starts with the apps' names
@@ -44,6 +41,13 @@ func Writable(dir string, files ...string) error {
 		}
 	}
 	return nil
+}
+
+// GiveHint says how to give what, a directory, to the running user: the
+// end of a line that says the user cannot write it.
+func GiveHint(what string) string {
+	uid := os.Getuid()
+	return fmt.Sprintf("give %s, and everything in it, to uid %d, the user the image runs Calibre and Calibre-Web as, for example with chown -R %d:%d on the host's directory", what, uid, uid, os.Getgid())
 }
 
 // EnsureDir makes dir, mode 0700, when it is not there, and leaves one

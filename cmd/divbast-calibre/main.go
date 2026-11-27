@@ -54,6 +54,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -142,16 +143,55 @@ func (l layout) calibre() string { return filepath.Join(l.config, "calibre") }
 // in memory.
 func (l layout) serverTmp() string { return filepath.Join(l.calibre(), "tmp") }
 
-// freshDir makes dir an empty folder of its owner's alone, mode 0700: it
-// removes the folder and all it holds, then makes it again.
-func freshDir(dir string) error {
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("emptying %s failed: %w", dir, err)
+// freshDir makes dir an empty directory of its owner's alone, mode 0700,
+// that the running user can write. It never removes or replaces dir
+// itself, which may be a volume of its own: it makes dir when it is not
+// there, and otherwise removes what dir holds, then sets its mode. An
+// entry it cannot remove stays, with one line on logw that names it and
+// says how to fix it: calibre-server names its files anew each time, so
+// the entry is in no one's way. A mode it cannot set gets such a line
+// too. It refuses a dir that is not a directory, and a symbolic link,
+// which it does not follow: emptying where a link points could empty a
+// directory that holds more than temporary files.
+func freshDir(dir string, logw io.Writer) error {
+	fi, err := os.Lstat(dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			return fmt.Errorf("making %s failed: %w", dir, err)
+		}
+		return nil
+	case err != nil:
+		return err
+	case fi.Mode()&fs.ModeSymlink != 0:
+		return fmt.Errorf("%s is a symbolic link; calibre-server keeps its temporary files there, and PID 1 empties it before each start, so it must be a directory: remove the link, or mount a volume there", dir)
+	case !fi.IsDir():
+		return fmt.Errorf("%s is not a directory; calibre-server keeps its temporary files there: remove it, or mount a volume there", dir)
 	}
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		return fmt.Errorf("making %s failed: %w", dir, err)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("calibre-server cannot read %s: %s: %w", dir, firststart.GiveHint("it"), err)
 	}
-	return nil
+	var stuck []string
+	var stuckErr error
+	for _, e := range entries {
+		path := filepath.Join(dir, e.Name())
+		if err := os.RemoveAll(path); err != nil {
+			stuck = append(stuck, path)
+			stuckErr = cmp.Or(stuckErr, err)
+		}
+	}
+	switch len(stuck) {
+	case 0:
+	case 1:
+		say(logw, "calibre-server's temporary files: %s stays: %v: %s", stuck[0], stuckErr, firststart.GiveHint(dir))
+	default:
+		say(logw, "calibre-server's temporary files: %s and %d more stay: %v: %s", stuck[0], len(stuck)-1, stuckErr, firststart.GiveHint(dir))
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		say(logw, "calibre-server's temporary files: the mode of %s stays %s: %v: %s", dir, fi.Mode().Perm(), err, firststart.GiveHint(dir))
+	}
+	return firststart.Writable(dir)
 }
 
 // setEnv returns env with key set to value, in place of any value it had.
@@ -255,7 +295,7 @@ func startApps(ctx context.Context, s *settings) int {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	env := withoutPasswords(s.environ)
-	sup := supervise.New(children(s.l, env), superviseOptions, nil)
+	sup := supervise.New(children(s.l, env, s.stderr), superviseOptions, nil)
 
 	// From here on, every program PID 1 runs goes through the supervisor's
 	// Exec, whose reaper collects them all
@@ -300,8 +340,9 @@ func startApps(ctx context.Context, s *settings) int {
 
 // children are the two apps, each with env as its whole environment, but
 // that calibre-server keeps its temporary files in its own folder in
-// /config, which is emptied before each of its starts.
-func children(l layout, env []string) []supervise.Child {
+// /config, which is emptied before each of its starts, with what fails
+// written to logw.
+func children(l layout, env []string, logw io.Writer) []supervise.Child {
 	return []supervise.Child{
 		{
 			Name: reload.ContentServer.String(),
@@ -310,7 +351,7 @@ func children(l layout, env []string) []supervise.Child {
 				"--userdb", filepath.Join(l.calibre(), firststart.UsersFile), "--disable-use-bonjour", l.books,
 			},
 			Env:    setEnv(env, "CALIBRE_TEMP_DIR", l.serverTmp()),
-			Before: func() error { return freshDir(l.serverTmp()) },
+			Before: func() error { return freshDir(l.serverTmp(), logw) },
 		},
 		{
 			Name: reload.CalibreWeb.String(),

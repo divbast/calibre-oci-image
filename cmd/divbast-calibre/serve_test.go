@@ -103,7 +103,7 @@ func TestChildren(t *testing.T) {
 			"-g", "/config/calibre-web/gdrive.db", "-i", "127.0.0.1", "-r", "-o", "/dev/stdout",
 		}},
 	}
-	got := children(image, env)
+	got := children(image, env, io.Discard)
 	if len(got) != len(want) {
 		t.Fatalf("%d children, want %d", len(got), len(want))
 	}
@@ -135,14 +135,15 @@ func TestChildren(t *testing.T) {
 
 // TestServerTmpFresh: calibre-server's Before leaves its folder of
 // temporary files there, empty, and its owner's alone, whatever it held,
-// and whether or not it was there.
+// and whether or not it was there, and logs nothing.
 func TestServerTmpFresh(t *testing.T) {
 	t.Parallel()
 	l := layout{config: t.TempDir(), books: "/books"}
 	if err := os.Mkdir(l.calibre(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	before := children(l, nil)[0].Before
+	var log bytes.Buffer
+	before := children(l, nil, &log)[0].Before
 	for _, held := range []bool{false, true} {
 		if held {
 			if err := os.MkdirAll(filepath.Join(l.serverTmp(), "srv-x"), 0o750); err != nil {
@@ -151,17 +152,156 @@ func TestServerTmpFresh(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(l.serverTmp(), "srv-x", "large.pdf"), []byte("a copy"), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.Chmod(l.serverTmp(), 0o755); err != nil { //nolint:gosec // G302: a mode Before must take away
+				t.Fatal(err)
+			}
 		}
 		if err := before(); err != nil {
 			t.Fatalf("held %t: %v", held, err)
 		}
-		fi, err := os.Stat(l.serverTmp())
-		if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
-			t.Fatalf("held %t: %s is %v, %v; want a folder, mode 0700", held, l.serverTmp(), fi, err)
+		checkEmpty(t, l.serverTmp())
+	}
+	if log.Len() != 0 {
+		t.Errorf("Before logged %q, want nothing", log.String())
+	}
+}
+
+// checkEmpty checks that dir is an empty directory, mode 0700.
+func checkEmpty(t *testing.T, dir string) {
+	t.Helper()
+	fi, err := os.Lstat(dir)
+	if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("%s is %v, %v; want a directory, mode 0700", dir, fi, err)
+	}
+	if left, err := os.ReadDir(dir); err != nil || len(left) != 0 {
+		t.Errorf("%s holds %d entries: %v", dir, len(left), err)
+	}
+}
+
+// TestServerTmpInPlace: calibre-server's Before empties its folder of
+// temporary files in place, and never removes it: the folder may be a
+// volume of its own, which cannot be removed. Here the folder that holds
+// it is read-only, so it can be neither removed nor made again. An entry
+// it cannot remove stays, with one line that names it and says how to
+// give the folder to the image's user, and calibre-server still starts.
+func TestServerTmpInPlace(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root writes past every mode")
+	}
+	setup := func(t *testing.T) (layout, os.FileInfo) {
+		t.Helper()
+		l := layout{config: t.TempDir(), books: "/books"}
+		if err := os.MkdirAll(filepath.Join(l.serverTmp(), "srv-x"), 0o700); err != nil {
+			t.Fatal(err)
 		}
-		if left, err := os.ReadDir(l.serverTmp()); err != nil || len(left) != 0 {
-			t.Errorf("held %t: %s holds %d entries: %v", held, l.serverTmp(), len(left), err)
+		if err := os.WriteFile(filepath.Join(l.serverTmp(), "srv-x", "large.pdf"), []byte("a copy"), 0o600); err != nil {
+			t.Fatal(err)
 		}
+		fi, err := os.Lstat(l.serverTmp())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(l.calibre(), 0o500); err != nil { //nolint:gosec // G302: a directory the test makes read-only
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(l.calibre(), 0o700) }) //nolint:gosec // G302: so the test's cleanup can remove it
+		return l, fi
+	}
+	t.Run("a folder that cannot be removed", func(t *testing.T) {
+		t.Parallel()
+		l, was := setup(t)
+		var log bytes.Buffer
+		if err := children(l, nil, &log)[0].Before(); err != nil {
+			t.Fatal(err)
+		}
+		checkEmpty(t, l.serverTmp())
+		if fi, err := os.Lstat(l.serverTmp()); err != nil || !os.SameFile(was, fi) {
+			t.Errorf("%s is not the folder it was: %v", l.serverTmp(), err)
+		}
+		if log.Len() != 0 {
+			t.Errorf("Before logged %q, want nothing", log.String())
+		}
+	})
+	t.Run("an entry that cannot be removed", func(t *testing.T) {
+		t.Parallel()
+		l, _ := setup(t)
+		stuck := filepath.Join(l.serverTmp(), "srv-x")
+		if err := os.Chmod(stuck, 0o500); err != nil { //nolint:gosec // G302: a directory the test makes read-only
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(stuck, 0o700) }) //nolint:gosec // G302: so the test's cleanup can remove it
+		if err := os.WriteFile(filepath.Join(l.serverTmp(), "other.epub"), []byte("a copy"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var log bytes.Buffer
+		if err := children(l, nil, &log)[0].Before(); err != nil {
+			t.Fatalf("Before = %v, want nil: calibre-server can start", err)
+		}
+		left, err := os.ReadDir(l.serverTmp())
+		if err != nil || len(left) != 1 || left[0].Name() != "srv-x" {
+			t.Errorf("%s holds %v, %v; want srv-x alone", l.serverTmp(), left, err)
+		}
+		lines := strings.Split(strings.TrimSpace(log.String()), "\n")
+		if len(lines) != 1 || !strings.Contains(lines[0], stuck+" stays") || !strings.Contains(lines[0], "chown -R") {
+			t.Errorf("Before logged %q, want one line naming %s, with how to give it to the user", log.String(), stuck)
+		}
+	})
+}
+
+// TestServerTmpRefused: calibre-server's Before refuses a folder of
+// temporary files that is a symbolic link, which it does not follow, and
+// one that is not a folder, saying what it is, and changes neither.
+func TestServerTmpRefused(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, want string
+		make       func(t *testing.T, l layout) (kept string)
+	}{
+		{"a symbolic link", "is a symbolic link", func(t *testing.T, l layout) string {
+			t.Helper()
+			elsewhere := t.TempDir()
+			kept := filepath.Join(elsewhere, "metadata.db")
+			if err := os.WriteFile(kept, []byte("a library"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(elsewhere, l.serverTmp()); err != nil {
+				t.Fatal(err)
+			}
+			return kept
+		}},
+		{"a file", "is not a directory", func(t *testing.T, l layout) string {
+			t.Helper()
+			if err := os.WriteFile(l.serverTmp(), []byte("a file"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return l.serverTmp()
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			l := layout{config: t.TempDir(), books: "/books"}
+			if err := os.Mkdir(l.calibre(), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			kept := tc.make(t, l)
+			was, err := os.Lstat(l.serverTmp())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var log bytes.Buffer
+			err = children(l, nil, &log)[0].Before()
+			if err == nil || !strings.Contains(err.Error(), l.serverTmp()+" "+tc.want) {
+				t.Errorf("Before = %v, want one that says %s %s", err, l.serverTmp(), tc.want)
+			}
+			if fi, lerr := os.Lstat(l.serverTmp()); lerr != nil || !os.SameFile(was, fi) || fi.Mode().Type() != was.Mode().Type() {
+				t.Errorf("%s was changed: %v", l.serverTmp(), lerr)
+			}
+			if _, serr := os.Stat(kept); serr != nil {
+				t.Errorf("%s is gone: %v", kept, serr)
+			}
+		})
 	}
 }
 
