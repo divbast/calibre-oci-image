@@ -131,12 +131,16 @@ is a breaking change.
   gate opens after a restart: PID 1 opens it at its next 1 s look at
   calibre-server's port, and the probe asks that port directly. Both are
   accepted as they are
-- **Calibre-Web's own calibredb calls are held, not refused** (R39, R40,
-  R41). On 8080, a request from a loopback peer, logged in by Digest as
-  `calibre-web` (both signs, never one), is the wrapper's: PID 1 looks at
-  `metadata.db` at once, then holds the request while a restart is to
-  come or runs, and passes it on once the new calibre-server takes
-  connections. A restart to come then skips its 5 s of quiet, but no
+- **Calibre-Web's own calibredb exports are held, not refused** (R39,
+  R40, R41). On 8080, a request from a loopback peer, logged in by Digest
+  as `calibre-web` (both signs, never one), is the wrapper's. When it is
+  an export, `/cdb/cmd/export/{version}` by calibre's own parts (downloads
+  and sends, and a KEPUB conversion's read, which PID 1 cannot tell from
+  a download's), PID 1 looks at `metadata.db` at once, then holds it
+  while a restart is to come or runs, and passes it on once the new
+  calibre-server takes connections. `show_metadata`, which Calibre's own
+  conversions read first, is not held while a restart is only to come,
+  so a conversion within about 5 s of an edit may use the old metadata. A restart to come then skips its 5 s of quiet, but no
   sooner than `Options.Quiet` (5 s) after calibre-server's latest start,
   so bulk reads restart it at most once each 5 s; and it still waits
   until no other 8080 request is open. While a tracked conversion runs,

@@ -587,29 +587,32 @@ it converts a book, go to the image's `calibredb`, which sends them to the
 Content Server as the read-only user `calibre-web`. It refuses every other
 call.
 
-Such a call must see what Calibre-Web has just changed. So after an
-edit in Calibre-Web, its reads through the Content Server wait a few
+Calibre-Web's downloads and sends must carry what it has just changed.
+So after an edit in Calibre-Web, its downloads and sends wait a few
 seconds, until the Content Server has restarted with the edit in it:
 
-- A read right after an edit has PID 1 restart the Content Server
+- A download right after an edit has PID 1 restart the Content Server
   without the 5 seconds of quiet, as soon as no other request to it is
   being answered: at once, or, when the Content Server started less than
-  5 seconds before, 5 seconds after that start. The read then waits for
-  the restart, about a second. In the image's tests, a download right
+  5 seconds before, 5 seconds after that start. The download then waits
+  for the restart, about a second. In the image's tests, a download right
   after an edit in a container that had just started came after 3 to 4
   seconds.
-- Bulk work, such as a Kobo's first sync, which converts each book to
-  KEPUB, reads and changes book after book. It restarts the Content
-  Server at most every 5 seconds, so each read waits up to about 5
-  seconds. With 20 books, that was 20 restarts in 99 seconds, and port
-  8080 answered 503 to one request in five meanwhile.
-- While a conversion in the Content Server runs, a read does not wait,
-  and sees what the Content Server has: the restart would wait for the
-  conversion.
+- A conversion started within about 5 seconds of an edit to the same
+  book may use the book's previous metadata: Calibre's own conversions
+  read the metadata first, and that read does not wait.
+- A conversion to KEPUB reads the book as a download does, and waits
+  too. So bulk KEPUB conversion, as in a Kobo's first sync, restarts the
+  Content Server at most every 5 seconds: with 20 books, 20 restarts in
+  99 seconds, and port 8080 answered 503 to one request in five
+  meanwhile.
+- While a conversion in the Content Server runs, a download does not
+  wait, and carries what the Content Server has: the restart would wait
+  for the conversion.
 - During a restart, a request that comes from inside the container,
   as only the image's own tools do, waits for the new Content Server
   rather than getting 503.
-- PID 1 knows Calibre-Web's reads by two signs together: they come from
+- PID 1 knows Calibre-Web's calls by two signs together: they come from
   inside the container and log in as `calibre-web`. It counts each one
   as Calibre-Web's own, so that the change Calibre-Web makes after it,
   such as a converted book, restarts the Content Server.
