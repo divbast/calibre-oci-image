@@ -8,8 +8,8 @@ cmake==4.4.5 \
     --hash=sha256:85625a9b6d5e88ff99c7eb79123d85570844e77ac076366cf75c609cc0b1b579
 
 # pins.txt: builds faust-cchardet, gevent, lxml, pyyaml from source
-cython==3.2.9 \
-    --hash=sha256:a2b0e87f6b80790c929308ca0831d686f7a180feab684fe8cd4a4380bd96aaca
+cython==3.3.1 \
+    --hash=sha256:61abc7feedd20dac6c4ff7ab3a30e17136a067b242ab9253e2b4a6d9a72c2b61
 
 # pins.txt: builds cryptography, nh3, rpds-py from source
 maturin==1.16.0 \

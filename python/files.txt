@@ -2,7 +2,6 @@
 # let pip install, by its sha256 and the URL PyPI serves it at. The build fetches each
 # and checks it before pip reads anything, so no package's code runs with the network on.
 # Do not edit it: change the pins, then run go run ./cmd/divbast-pins again.
-a2b0e87f6b80790c929308ca0831d686f7a180feab684fe8cd4a4380bd96aaca https://files.pythonhosted.org/packages/00/ec/e61deec9bcfbb0e1b36f8b5ba75cb44644419b4bfd0fdd666bffd21d9579/cython-3.2.9-py3-none-any.whl
 ea0c9a0384df69ed86a943a15cde37d0360b82491b3910dc2215e202e62b5b02 https://files.pythonhosted.org/packages/01/f9/575c8d760eae1fc99651b7cc5efd96ad5379ca4d6b53750b0fb4fe983f34/imagesize-2.0.1-py3-none-any.whl
 d0013f540772d1420576855455d050a2180186c91c15779301ac2ccb3eeb68de https://files.pythonhosted.org/packages/02/10/5da547df7a391dcde17f59520a231527b8571e6f46fc8efb02ccb370ab12/docutils-0.22.4-py3-none-any.whl
 63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86 https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
@@ -111,6 +110,7 @@ c3c7606c27503ad8d501270406e345ddb480a7b5f38827eafe4fa82a137f0021 https://files.p
 258fde948cf45aab5df23fcc9e17a9050ee73d4e1002fe6cf86519f61c414778 https://files.pythonhosted.org/packages/96/62/0c1cf20fe158b0e623e78acbf5fb6de5f1410a408f65f727e4090497627b/meson_python-0.22.1-py3-none-any.whl
 f6f868a457a6bd485b78d26e619045718bcd0b7720a6bf97d5fe86a1523423e8 https://files.pythonhosted.org/packages/96/bd/72bace0bf4025af8ab4bf972394fab466d4b565cdbea805281fbee9a8dbc/py7zr-1.1.4-py3-none-any.whl
 82e7a6ab08fcb27879864ddf63dbb529fb032ca336c331cb1597d6dd8b47c92e https://files.pythonhosted.org/packages/9c/47/1d02221cde942fdd7a4ce4a940682e0b054534215ab02ffdee4955e4d66c/httplib2-0.32.1-py3-none-any.whl
+61abc7feedd20dac6c4ff7ab3a30e17136a067b242ab9253e2b4a6d9a72c2b61 https://files.pythonhosted.org/packages/9d/55/088578d75bc8dbcbc535af04b1d596ff227ca756dd74f9d3c1c526f955d0/cython-3.3.1-py3-none-any.whl
 7b46165bb56eb4704e2eaaf86f3c940d19154535d9b0ca7d6d590b04060e00d5 https://files.pythonhosted.org/packages/9d/af/182eb91b0df3fe75c4d9f26fe70684569566745f6ba7e5c9c73a862c5252/cryptography-50.0.2.tar.gz
 b8eaebd6d32565ce85b79b17e2aa52815889249b37bb6dd0894d3eca67c329f8 https://files.pythonhosted.org/packages/9e/16/428cc7df8670f407c7810882cf736dbc04163ec60589f3bd8ebb6a2c263a/texttable-1.7.3-py2.py3-none-any.whl
 5e755153ac4faf64c10a4b6dd3307680166a3edf65b38df22df592610f8fa874 https://files.pythonhosted.org/packages/9e/33/848922889e946d4befc415c219fe516af75c49555d8e736e183bfd30db42/zope_event-6.2-py3-none-any.whl
