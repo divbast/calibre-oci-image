@@ -778,6 +778,21 @@ that draws pages runs under Chromium's seccomp-bpf sandbox. The image sets
 A value of your own replaces the image's. Keep `--disable-gpu` in it, or
 every PDF fails, and keep the other two under Podman.
 
+Calibre 9.19.0 comes with Qt WebEngine 6.10.1, which sometimes stops a PDF
+conversion just as it starts to draw the pages. The conversion then
+fails. Its log ends at `Rendering 1 HTML files`, followed by `EOFError`.
+This happens more often when the machine is busy or has few processors.
+In tests it stopped:
+
+- about 2 or 3 conversions in 100 on four processors;
+- 2 to 7 in 100 on one processor;
+- none of 80 on 17 processors that had no other work.
+
+It can happen to a PDF made by either app: the Content Server or
+Calibre-Web. Nothing is lost. The book keeps the formats it had, and
+converting it again works. Qt fixed this in Qt WebEngine 6.10.2, so it
+stops once a Calibre release comes with that version or a newer one.
+
 ### ImageMagick
 
 Calibre-Web makes covers and thumbnails with ImageMagick, under the

@@ -319,6 +319,29 @@ or read in upstream's source where the line says so:
   logs "Activated seccomp-bpf sandbox for process type: renderer" on
   both engines. Never `QTWEBENGINE_DISABLE_SANDBOX`: it turns Chromium's
   whole sandbox off, the seccomp-bpf filter with it
+- Calibre 9.19.0's bundle carries Qt WebEngine 6.10.1, Chromium 134. Its
+  browser thread can read the GPU thread's channel manager before that
+  thread has made it (QTBUG-142720, QTBUG-142497; fixed in 6.10.2). When
+  it does, the PDF worker ends with a segmentation fault just as Chromium
+  starts to draw the pages. The job's log ends at `Rendering 1 HTML
+  files`, and calibre-server's traceback is `EOFError` in
+  `simple_worker.py`. Both apps' PDF output can fail this way, and
+  converting again works. Measured:
+  - through 8080: 2 of 60 and 3 of 100 on one CPU, and 2 of 160 with
+    eight containers on 17 CPUs;
+  - through the worker alone: 2 of 80 on four CPUs, and 0 of 80 on 17;
+  - `ebook-convert`, which Calibre-Web runs: 1 of 60 on one CPU.
+
+  It failed just as often with each of the three Chromium flags left
+  out, with the variable unset, without the contract's confinement or
+  seccomp, and on both engines
+- `TestPDFOutputSandboxed` reads the bundle's Qt WebEngine version once
+  a run. It converts again, once, only when that version is exactly
+  6.10.1 and the conversion failed in exactly that way, and it says so in
+  its log. On any other version, older or newer, it never converts again.
+  The retry and the README's note go once the bundle's Qt WebEngine is
+  6.10.2 or newer. With them come a test that the version is 6.10.2 or
+  newer, and a test that PDF output works while the CPUs are busy
 - Without libc-bin's `C.utf8`, Qt warned of a `C` locale at every
   calibre-server start; with it, never. Calibre names its folders and
   files in ASCII, and Calibre-Web in Unicode, whatever the locale; each
