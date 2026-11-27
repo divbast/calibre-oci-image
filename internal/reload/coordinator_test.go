@@ -138,11 +138,12 @@ func (f *fakeReloader) times() (reconnects, restarts []time.Time) {
 // harness is a Coordinator with a fake clock and a fake Reloader, which
 // runs each reload at once, on the goroutine that asked for it.
 type harness struct {
-	t   *testing.T
-	c   *Coordinator
-	clk *fakeClock
-	r   *fakeReloader
-	log *bytes.Buffer
+	t       *testing.T
+	c       *Coordinator
+	clk     *fakeClock
+	r       *fakeReloader
+	log     *bytes.Buffer
+	waiting chan struct{} // a value each time Hold begins to wait
 }
 
 func newHarness(t *testing.T) *harness {
@@ -153,8 +154,10 @@ func newHarness(t *testing.T) *harness {
 	log := new(bytes.Buffer)
 	c.logw = log
 	c.spawn = func(f func()) { f() }
+	waiting := make(chan struct{}, 16)
+	c.waits = func() { waiting <- struct{}{} }
 	t.Cleanup(c.Stop)
-	return &harness{t: t, c: c, clk: clk, r: r, log: log}
+	return &harness{t: t, c: c, clk: clk, r: r, log: log, waiting: waiting}
 }
 
 // running brings both apps up, as serve does before Watch starts, and
@@ -1046,23 +1049,21 @@ func (h *harness) hold(ctx context.Context) <-chan error {
 	return errc
 }
 
-// held calls Hold on a goroutine of its own, waits until the Coordinator
-// holds it, and returns what it returns.
+// held calls Hold on a goroutine of its own, waits until Hold has done
+// what it calls for, a restart among it, and holds the request, and
+// returns what it returns.
 func (h *harness) held(ctx context.Context) <-chan error {
 	h.t.Helper()
 	errc := h.hold(ctx)
-	for end := time.Now().Add(time.Second); ; {
-		h.c.mu.Lock()
-		holding := h.c.held != nil
-		h.c.mu.Unlock()
-		if holding {
-			return errc
-		}
-		if time.Now().After(end) {
-			h.t.Fatal("Hold never held the request")
-		}
-		time.Sleep(time.Millisecond)
+	select {
+	case <-h.waiting:
+		return errc
+	case err := <-errc:
+		h.t.Fatalf("Hold returned %v at once; want it to hold the request", err)
+	case <-time.After(10 * time.Second):
+		h.t.Fatal("Hold never held the request")
 	}
+	return errc
 }
 
 // returned reports whether errc gives a value within a short real time,

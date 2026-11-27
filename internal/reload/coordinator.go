@@ -126,6 +126,7 @@ type Coordinator struct {
 	// The tests replace these.
 	logw  io.Writer
 	spawn func(func()) // runs a reload
+	waits func()       // runs when Hold has done what it calls for, and waits
 
 	mu           sync.Mutex
 	stopped      bool
@@ -187,6 +188,7 @@ func New(clk Clock, r Reloader, o Options) *Coordinator {
 		clk: clk, r: r, o: o, ctx: ctx, stop: stop,
 		logw:  os.Stderr,
 		spawn: func(f func()) { go f() },
+		waits: func() {},
 		jobs:  make(map[int]*job),
 	}
 }
@@ -247,6 +249,7 @@ func (c *Coordinator) Hold(ctx context.Context) error {
 	acts := c.step(now)
 	c.mu.Unlock()
 	c.do(acts)
+	c.waits()
 	select {
 	case <-held:
 		return nil
