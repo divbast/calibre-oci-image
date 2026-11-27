@@ -49,7 +49,8 @@ type Child struct {
 	// once: calibre-server 9.19.0 loses a SIGTERM that comes while it
 	// starts, before it serves. A second SIGTERM to a child that acted on
 	// the first could cut short how it ends, so a child that does not
-	// answer gets none.
+	// answer gets none, and Serves first gives such a child time to stop
+	// answering, as Answers does.
 	Serves func(ctx context.Context) error
 }
 
@@ -480,7 +481,11 @@ func (s *Supervisor) term(watch context.Context, k *kid) {
 }
 
 // resend sends SIGTERM once more to the process that answered after it
-// lost one, unless it has ended since.
+// lost one, unless it has ended since. A process the reaper has collected
+// but whose end Run's goroutine has not yet seen keeps the same window as
+// the first SIGTERM has. After a Restart and then Run's end, a process can
+// get a SIGTERM from each and one more from resend: that third comes only
+// when it still answered, so it had lost one.
 func (s *Supervisor) resend(l lostTerm) {
 	if l.k.proc == l.p {
 		_ = l.p.Signal(syscall.SIGTERM)

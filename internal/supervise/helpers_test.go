@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -146,42 +148,50 @@ func helperMain(mode string) int {
 
 // lateServeMain is the late-serve child, which starts as calibre-server
 // 9.19.0 does: each SIGTERM it gets before it serves is lost. It serves
-// once the file HELPER_GO names exists, and then makes the file
-// HELPER_SERVING names. A SIGTERM while it serves ends it: it removes that
-// file at once, and exits HELPER_SLEEP_MS later, as a server takes a while
-// to stop. Each SIGTERM it gets adds a line to the file HELPER_TERMS names.
+// HTTP on the Unix socket HELPER_SOCK once the file HELPER_GO names
+// exists. A SIGTERM while it serves ends it: it still answers for
+// HELPER_ANSWER_MS after it, as a server that acted on a SIGTERM does
+// for a moment, then closes the socket, and exits HELPER_SLEEP_MS after
+// the SIGTERM. Each SIGTERM it gets adds a line to the file HELPER_TERMS
+// names.
 func lateServeMain(f *os.File, code int) int {
 	term := make(chan os.Signal, 4)
 	signal.Notify(term, syscall.SIGTERM)
 	ready(f)
-	goFile, serving, terms := os.Getenv("HELPER_GO"), os.Getenv("HELPER_SERVING"), os.Getenv("HELPER_TERMS")
-	ms, _ := strconv.Atoi(os.Getenv("HELPER_SLEEP_MS"))
+	goFile, sock, terms := os.Getenv("HELPER_GO"), os.Getenv("HELPER_SOCK"), os.Getenv("HELPER_TERMS")
+	answerMS, _ := strconv.Atoi(os.Getenv("HELPER_ANSWER_MS"))
+	sleepMS, _ := strconv.Atoi(os.Getenv("HELPER_SLEEP_MS"))
 	tick := time.NewTicker(5 * time.Millisecond)
 	defer tick.Stop()
-	var exit <-chan time.Time
-	serves, stopping := false, false
+	var srv *http.Server
+	var quiet, exit <-chan time.Time
 	for {
 		select {
 		case <-term:
 			if appendLine(terms) != nil {
 				return 2
 			}
-			if serves && !stopping {
-				stopping = true
-				if os.Remove(serving) != nil { //nolint:gosec // G703: the test's own file, named in the child's environment by the test
-					return 2
-				}
-				exit = time.After(time.Duration(ms) * time.Millisecond)
+			if srv != nil && exit == nil {
+				quiet = time.After(time.Duration(answerMS) * time.Millisecond)
+				exit = time.After(time.Duration(sleepMS) * time.Millisecond)
 			}
+		case <-quiet:
+			quiet = nil
+			_ = srv.Close() // the socket goes with the listener
 		case <-exit:
 			return code
 		case <-tick.C:
-			if _, err := os.Stat(goFile); err == nil && !serves { //nolint:gosec // G703: the test's own file, named in the child's environment by the test
-				serves = true
-				if os.WriteFile(serving, nil, 0o600) != nil { //nolint:gosec // G703: the test's own file, named in the child's environment by the test
-					return 2
-				}
+			if _, err := os.Stat(goFile); err != nil || srv != nil { //nolint:gosec // G703: the test's own file, named in the child's environment by the test
+				continue
 			}
+			ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", sock)
+			if err != nil {
+				return 2
+			}
+			srv = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+			}), ReadHeaderTimeout: time.Second}
+			go func() { _ = srv.Serve(ln) }()
 		}
 	}
 }
@@ -199,19 +209,29 @@ func appendLine(path string) error {
 	return f.Close()
 }
 
+// lateEvery is how often the late-serve child's Serves looks, and so how
+// long after a SIGTERM its first look comes.
+const lateEvery = 250 * time.Millisecond
+
 // lateServe is a late-serve child's files, in a folder of the test's own.
 type lateServe struct {
-	goFile, serving, terms string
-	sleepMS                int
+	goFile, sock, terms string
+	answerMS, sleepMS   int
 }
 
 // newLateServe is a late-serve child that serves at once when atOnce is
-// true, and otherwise once the test calls serve, and that exits sleepMS
-// after the SIGTERM that ends it.
-func newLateServe(t *testing.T, atOnce bool, sleepMS int) *lateServe {
+// true, and otherwise once the test calls serve; that still answers for
+// answerMS after the SIGTERM that ends it; and that exits sleepMS after
+// that SIGTERM.
+func newLateServe(t *testing.T, atOnce bool, answerMS, sleepMS int) *lateServe {
 	t.Helper()
-	dir := t.TempDir()
-	ls := &lateServe{goFile: dir + "/go", serving: dir + "/serving", terms: dir + "/terms", sleepMS: sleepMS}
+	// A short folder: a Unix socket's path is short
+	dir, err := os.MkdirTemp("", "sv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	ls := &lateServe{goFile: dir + "/go", sock: dir + "/s", terms: dir + "/terms", answerMS: answerMS, sleepMS: sleepMS}
 	if atOnce {
 		if err := os.WriteFile(ls.goFile, nil, 0o600); err != nil {
 			t.Fatal(err)
@@ -220,35 +240,22 @@ func newLateServe(t *testing.T, atOnce bool, sleepMS int) *lateServe {
 	return ls
 }
 
-// child is the Child named name that runs ls, with ls.serves as its
-// Serves.
-func (ls *lateServe) child(name string) Child {
-	return Child{
-		Name: name,
-		Env: []string{
-			"HELPER_GO=" + ls.goFile, "HELPER_SERVING=" + ls.serving, "HELPER_TERMS=" + ls.terms,
-			"HELPER_SLEEP_MS=" + strconv.Itoa(ls.sleepMS),
+// child is the Child "a" that runs ls, with Answers on its socket, once
+// each lateEvery, as its Serves.
+func (ls *lateServe) child() Child {
+	client := &http.Client{Transport: &http.Transport{
+		DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", ls.sock)
 		},
-		Serves: ls.serves,
-	}
-}
-
-// serves is the child's Serves. It first waits a fifth of a second, as a
-// request made after a SIGTERM reaches a server that has seen it, and then
-// looks for the serving file every 10 ms.
-func (ls *lateServe) serves(ctx context.Context) error {
-	wait := time.NewTimer(200 * time.Millisecond)
-	defer wait.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-wait.C:
-		}
-		if _, err := os.Stat(ls.serving); err == nil {
-			return nil
-		}
-		wait.Reset(10 * time.Millisecond)
+	}}
+	return Child{
+		Name: "a",
+		Env: []string{
+			"HELPER_GO=" + ls.goFile, "HELPER_SOCK=" + ls.sock, "HELPER_TERMS=" + ls.terms,
+			"HELPER_ANSWER_MS=" + strconv.Itoa(ls.answerMS), "HELPER_SLEEP_MS=" + strconv.Itoa(ls.sleepMS),
+		},
+		Serves: Answers(client, "http://late-serve/", lateEvery),
 	}
 }
 

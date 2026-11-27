@@ -714,7 +714,12 @@ func waitLog(ctx context.Context, c *harness.Container, re *regexp.Regexp, withi
 // count. stop logs how long the command took all the same.
 //
 // The stop's start is read from this host's clock and the exit from the
-// engine's, which is the same clock when the engine runs on this host.
+// engine's: the engines record no start of a stop that both share (Docker
+// records the signal as a kill event, Podman 5.7 records nothing). The two
+// clocks are one when the engine runs on this host, and can drift apart
+// when it runs in a VM, as Docker Desktop's and a Podman machine's do. A
+// recorded exit outside the stop command's own run, on this host's clock,
+// cannot be true, so it fails, rather than give a wrong time.
 func stop(tb testing.TB, e harness.Engine, c *harness.Container) (took time.Duration, code int) {
 	tb.Helper()
 	start := time.Now()
@@ -731,9 +736,23 @@ func stop(tb testing.TB, e harness.Engine, c *harness.Container) (took time.Dura
 	if err != nil {
 		tb.Fatal(err)
 	}
+	if err := exitWithin(e.Name(), start, command, exited); err != nil {
+		tb.Fatal(err)
+	}
 	took = exited.Sub(start)
 	tb.Logf("%s stop %s: PID 1 exited %s after the stop began; the command took %s", e.Name(), c, took, command)
 	return took, code
+}
+
+// exitWithin is nil when exited, the exit engine records, falls in the
+// stop command's run, from start for command on this host's clock, as it
+// must when the two clocks agree.
+func exitWithin(engine string, start time.Time, command time.Duration, exited time.Time) error {
+	if end := start.Add(command); exited.Before(start) || exited.After(end) {
+		return fmt.Errorf("%s records PID 1's exit at %s, outside the stop command's run, from %s to %s on this host's clock: the engine's clock and this host's disagree, so the time to PID 1's exit cannot be read",
+			engine, exited.UTC().Format(time.RFC3339Nano), start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano))
+	}
+	return nil
 }
 
 // exitedAt returns the time the engine records for the exit of c's PID 1,

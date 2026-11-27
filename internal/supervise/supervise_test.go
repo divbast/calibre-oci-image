@@ -597,9 +597,9 @@ func TestBeforeFails(t *testing.T) {
 // serves, and the stop ends then, with 0, not at the grace.
 func TestStopResendsLostTerm(t *testing.T) {
 	t.Parallel()
-	ls := newLateServe(t, false, 0)
+	ls := newLateServe(t, false, 0, 0)
 	h := newHelper(t, always("late-serve"))
-	s, _, _ := newTest(t, h, ls.child("a"))
+	s, _, _ := newTest(t, h, ls.child())
 	r := runSupervisor(t, s)
 	a := nextStart(t, h)
 	t.Cleanup(func() { _ = syscall.Kill(a.pid, syscall.SIGKILL) })
@@ -629,14 +629,14 @@ func TestStopResendsLostTerm(t *testing.T) {
 // comes then, not at the grace.
 func TestRestartResendsLostTerm(t *testing.T) {
 	t.Parallel()
-	ls := newLateServe(t, false, 0)
+	ls := newLateServe(t, false, 0, 0)
 	h := newHelper(t, func(n int) string {
 		if n == 1 {
 			return "late-serve"
 		}
 		return "wait"
 	})
-	s, _, _ := newTest(t, h, ls.child("a"))
+	s, _, _ := newTest(t, h, ls.child())
 	r := runSupervisor(t, s)
 	first := nextStart(t, h)
 	t.Cleanup(func() { _ = syscall.Kill(first.pid, syscall.SIGKILL) })
@@ -666,20 +666,23 @@ func TestRestartResendsLostTerm(t *testing.T) {
 	gone(t, second)
 }
 
-// TestServingChildGetsOneTerm: a child that serves before the stop acts on
-// its SIGTERM, and gets no second one while it takes its time to end. One
-// that only serves gets none.
-func TestServingChildGetsOneTerm(t *testing.T) {
+// TestServingChildGetsNoTerm: a child that serves gets no SIGTERM for
+// serving alone; at the stop it gets one, acts on it, and ends.
+func TestServingChildGetsNoTerm(t *testing.T) {
 	t.Parallel()
-	ls := newLateServe(t, true, 600)
+	ls := newLateServe(t, true, 0, 0)
 	h := newHelper(t, always("late-serve"))
-	s, _, _ := newTest(t, h, ls.child("a"))
+	s, _, _ := newTest(t, h, ls.child())
 	r := runSupervisor(t, s)
 	a := nextStart(t, h)
 	t.Cleanup(func() { _ = syscall.Kill(a.pid, syscall.SIGKILL) })
 
-	waitFile(t, ls.serving)
-	expectNoStart(t, h)
+	waitFile(t, ls.sock)
+	select {
+	case st := <-h.starts:
+		t.Fatalf("an extra start: %s's start %d", st.name, st.n)
+	case <-time.After(2 * lateEvery):
+	}
 	if n := ls.termCount(t); n != 0 {
 		t.Fatalf("the child got %d SIGTERMs while it served, want none", n)
 	}
@@ -689,5 +692,28 @@ func TestServingChildGetsOneTerm(t *testing.T) {
 	gone(t, a)
 	if n := ls.termCount(t); n != 1 {
 		t.Errorf("the child got %d SIGTERMs, want 1", n)
+	}
+}
+
+// TestStoppingChildGetsOneTerm: a child that acts on the stop's SIGTERM
+// but still answers for 30 ms after it, as a server does for a moment
+// while it stops, gets no second SIGTERM while it takes its time to end:
+// the first look comes one lateEvery after the SIGTERM.
+func TestStoppingChildGetsOneTerm(t *testing.T) {
+	t.Parallel()
+	ls := newLateServe(t, true, 30, 3*int(lateEvery/time.Millisecond))
+	h := newHelper(t, always("late-serve"))
+	s, _, _ := newTest(t, h, ls.child())
+	r := runSupervisor(t, s)
+	a := nextStart(t, h)
+	t.Cleanup(func() { _ = syscall.Kill(a.pid, syscall.SIGKILL) })
+
+	waitFile(t, ls.sock)
+	if code := r.stop(t); code != 0 {
+		t.Errorf("Run returned %d, want 0", code)
+	}
+	gone(t, a)
+	if n := ls.termCount(t); n != 1 {
+		t.Errorf("the child got %d SIGTERMs, want 1: a second one came while it still answered after acting on the first", n)
 	}
 }

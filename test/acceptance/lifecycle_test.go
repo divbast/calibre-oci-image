@@ -173,6 +173,33 @@ func TestStop(t *testing.T) {
 	checks.True("PID 1 exits under "+stopWithin.String()+" after the stop began", took < stopWithin, took.String())
 }
 
+// TestExitWithin: an exit the engine records outside the stop command's
+// run, as when the engine's clock and this host's drift apart, is an
+// error that says so; one inside it is not. It needs no image.
+func TestExitWithin(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	const command = 3 * time.Second
+	for _, tc := range []struct {
+		name   string
+		exited time.Time
+		ok     bool
+	}{
+		{"inside", start.Add(time.Second), true},
+		{"at the end", start.Add(command), true},
+		{"before the start", start.Add(-10 * time.Millisecond), false},
+		{"after the end", start.Add(command + 10*time.Millisecond), false},
+	} {
+		err := exitWithin("podman", start, command, tc.exited)
+		switch {
+		case tc.ok && err != nil:
+			t.Errorf("%s: exitWithin = %v, want nil", tc.name, err)
+		case !tc.ok && (err == nil || !strings.Contains(err.Error(), "clock")):
+			t.Errorf("%s: exitWithin = %v, want an error that names the clocks", tc.name, err)
+		}
+	}
+}
+
 // serveLibrary serves the image on the fixture library, owned by uid
 // 65532, and returns it with an admin's session with Calibre-Web.
 func serveLibrary(r *redactor, e harness.Engine, image string) (*harness.Serving, *webSession) {
