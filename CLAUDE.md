@@ -252,6 +252,14 @@ or read in upstream's source where the line says so:
   `HEALTHCHECK`'s start period is 60 s. `docker stop` of an idle
   container: 0.4 to 1.4 s, exit 0. `divbast-calibre health` takes about
   8 ms
+- calibre-server 9.19.0 loses a SIGTERM that comes while it starts,
+  before its serving loop runs, and goes on running: 4 of 5 sent at its
+  Fontconfig lines were lost. Its port takes connections before that loop
+  runs (17 of 20 sent at the first connection were lost; 0 of 40 sent at
+  the first answer), so after each SIGTERM to calibre-server, PID 1 asks
+  its loopback port for any answer once a second, and if one comes, sends
+  one more SIGTERM. A calibre-server that acted on the first gets none: a
+  second SIGTERM then can end it by the signal or print a traceback
 - The image: 2.34 GB on disk and 585 MB compressed on arm64, 2.37 GB and
   596 MB on amd64. Calibre's bundle is about 870 MiB of it
 - `/tmp`, at 2 GiB: a 300 MiB add through 8080 grows

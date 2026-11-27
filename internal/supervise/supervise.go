@@ -41,6 +41,16 @@ type Child struct {
 	// purpose. It never runs while the child runs. When it fails, the
 	// start fails, and is tried again as any failed start is.
 	Before func() error
+	// Serves, when set, returns once the child answers a request made
+	// after Serves was called, or with ctx's error once ctx ends. After
+	// each SIGTERM the supervisor sends the child, for Run's end or for a
+	// Restart, it calls Serves, and ends it when the child ends. A child
+	// that still answers after a SIGTERM has lost it, and gets one more,
+	// once: calibre-server 9.19.0 loses a SIGTERM that comes while it
+	// starts, before it serves. A second SIGTERM to a child that acted on
+	// the first could cut short how it ends, so a child that does not
+	// answer gets none.
+	Serves func(ctx context.Context) error
 }
 
 // Options are the supervisor's times.
@@ -84,7 +94,7 @@ type Supervisor struct {
 	kids   []*kid
 	byName map[string]*kid
 	o      Options
-	start  func(Child) (*os.Process, error)
+	start  func(*Child) (*os.Process, error)
 
 	// The tests replace these.
 	clk         clock
@@ -94,6 +104,7 @@ type Supervisor struct {
 	exits    chan exit
 	ticks    chan tick
 	requests chan request
+	lost     chan lostTerm
 	serving  chan struct{} // closed when Run begins
 	stopping chan struct{} // closed when Run's context has ended
 
@@ -112,6 +123,13 @@ type kid struct {
 	planned bool          // a Restart is under way
 	gen     int           // the latest timer's number; a tick with another is stale
 	waiting []chan<- error
+	watch   context.CancelFunc // ends the Serves call after proc's SIGTERM; nil when none runs
+}
+
+// lostTerm is a child's Serves returning after a SIGTERM to p: p lost it.
+type lostTerm struct {
+	k *kid
+	p *os.Process
 }
 
 // exit is a child's end, as the reaper saw it.
@@ -145,7 +163,7 @@ func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) 
 
 // New returns a supervisor of children, which Run starts with start, or
 // with Start when start is nil.
-func New(children []Child, o Options, start func(Child) (*os.Process, error)) *Supervisor {
+func New(children []Child, o Options, start func(*Child) (*os.Process, error)) *Supervisor {
 	if start == nil {
 		start = Start
 	}
@@ -159,6 +177,7 @@ func New(children []Child, o Options, start func(Child) (*os.Process, error)) *S
 		exits:    make(chan exit),
 		ticks:    make(chan tick),
 		requests: make(chan request),
+		lost:     make(chan lostTerm),
 		serving:  make(chan struct{}),
 		stopping: make(chan struct{}),
 		states:   make(map[string]State, len(children)),
@@ -177,13 +196,13 @@ func New(children []Child, o Options, start func(Child) (*os.Process, error)) *S
 // ends the processes c starts. Its stdin is /dev/null, its stdout and
 // stderr are PID 1's, and its environment is c.Env without
 // PasswordVariables.
-func Start(c Child) (*os.Process, error) {
+func Start(c *Child) (*os.Process, error) {
 	return startProcess(c)
 }
 
 // startProcess is Start, with extra as the child's file descriptors from
 // 3 on.
-func startProcess(c Child, extra ...*os.File) (*os.Process, error) {
+func startProcess(c *Child, extra ...*os.File) (*os.Process, error) {
 	if len(c.Argv) == 0 {
 		return nil, fmt.Errorf("supervise: %s has no command", c.Name)
 	}
@@ -200,32 +219,39 @@ func startProcess(c Child, extra ...*os.File) (*os.Process, error) {
 }
 
 // Run starts every child and keeps each running until ctx ends. Then it
-// sends SIGTERM to each child, and SIGKILL to the process group of each
-// still running Options.Grace later. It returns once every child has
-// ended: 0, or 1 when one had to be killed. Run is called once.
+// sends SIGTERM to each child, once more to one that lost it (see
+// Child.Serves), and SIGKILL to the process group of each still running
+// Options.Grace after the first. It returns once every child has ended:
+// 0, or 1 when one had to be killed. Run is called once.
 func (s *Supervisor) Run(ctx context.Context) (exitCode int) {
 	reap.ensure()
 	close(s.serving)
+	// What watches a child after its SIGTERM outlives ctx, which has
+	// ended when a stop begins: it ends when the child does
+	watch := context.WithoutCancel(ctx)
 	for _, k := range s.kids {
 		s.launch(k, false)
 	}
 	for {
 		select {
 		case <-ctx.Done():
-			return s.stop()
+			return s.stop(watch)
 		case e := <-s.exits:
 			s.exited(e)
 		case t := <-s.ticks:
 			s.ticked(t)
 		case r := <-s.requests:
-			s.restart(r)
+			s.restart(watch, r)
+		case l := <-s.lost:
+			s.resend(l)
 		}
 	}
 }
 
 // Restart stops the child named name with SIGTERM, and starts it again as
-// soon as it has ended, with no wait. If it has not ended Options.Grace
-// after the SIGTERM, it and its process group get SIGKILL. If the child is
+// soon as it has ended, with no wait. A child that lost the SIGTERM gets
+// one more (see Child.Serves). If it has not ended Options.Grace after the
+// first SIGTERM, it and its process group get SIGKILL. If the child is
 // waiting to be started again after ending on its own, it is started at
 // once instead. A Restart while another is under way, or a child ending
 // on its own meanwhile, still gives one start. Restart returns once that
@@ -281,7 +307,7 @@ func (s *Supervisor) launch(k *kid, keepRun bool) {
 		}
 	}
 	reap.begin()
-	p, err := s.start(k.Child)
+	p, err := s.start(&k.Child)
 	if err != nil {
 		reap.abandon()
 		k.planned = false
@@ -309,6 +335,7 @@ func (s *Supervisor) launch(k *kid, keepRun bool) {
 func (s *Supervisor) exited(e exit) {
 	k := e.k
 	ended(e.p)
+	k.unwatch()
 	k.proc = nil
 	if k.planned {
 		s.setState(k, false, true)
@@ -362,7 +389,7 @@ func (s *Supervisor) ticked(t tick) {
 	}
 }
 
-func (s *Supervisor) restart(r request) {
+func (s *Supervisor) restart(watch context.Context, r request) {
 	k := s.byName[r.name]
 	if k == nil {
 		r.reply <- fmt.Errorf("supervise: no child is named %q", r.name)
@@ -382,20 +409,20 @@ func (s *Supervisor) restart(r request) {
 	default:
 		k.planned = true
 		s.setState(k, true, true)
-		_ = k.proc.Signal(syscall.SIGTERM)
+		s.term(watch, k)
 		s.after(k, s.o.Grace)
 	}
 }
 
 // stop ends every child, and returns Run's exit code.
-func (s *Supervisor) stop() int {
+func (s *Supervisor) stop(watch context.Context) int {
 	close(s.stopping)
 	running := 0
 	for _, k := range s.kids {
 		s.answer(k, errStopping)
 		if k.proc != nil {
 			running++
-			_ = k.proc.Signal(syscall.SIGTERM)
+			s.term(watch, k)
 		}
 	}
 	if running == 0 {
@@ -407,9 +434,12 @@ func (s *Supervisor) stop() int {
 		select {
 		case e := <-s.exits:
 			ended(e.p)
+			e.k.unwatch()
 			e.k.proc = nil
 			s.setState(e.k, false, false)
 			running--
+		case l := <-s.lost:
+			s.resend(l)
 		case <-grace:
 			grace = nil
 			code = 1
@@ -422,6 +452,47 @@ func (s *Supervisor) stop() int {
 		}
 	}
 	return code
+}
+
+// term sends k SIGTERM. When k has Serves, it is called from now on, with
+// a context from watch, in a goroutine of its own, and if it returns while
+// k still runs, k lost the SIGTERM, which resend sends again. One call
+// watches each process: a second SIGTERM, as when Run ends during a
+// Restart's stop, starts no second.
+func (s *Supervisor) term(watch context.Context, k *kid) {
+	_ = k.proc.Signal(syscall.SIGTERM)
+	if k.Serves == nil || k.watch != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(watch)
+	k.watch = cancel
+	l := lostTerm{k: k, p: k.proc}
+	serves := k.Serves
+	go func() {
+		if serves(ctx) != nil {
+			return
+		}
+		select {
+		case s.lost <- l:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+// resend sends SIGTERM once more to the process that answered after it
+// lost one, unless it has ended since.
+func (s *Supervisor) resend(l lostTerm) {
+	if l.k.proc == l.p {
+		_ = l.p.Signal(syscall.SIGTERM)
+	}
+}
+
+// unwatch ends the Serves call watching k's process, which has ended.
+func (k *kid) unwatch() {
+	if k.watch != nil {
+		k.watch()
+		k.watch = nil
+	}
 }
 
 // kill sends SIGKILL to p's process group, which also holds the processes

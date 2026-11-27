@@ -352,8 +352,12 @@ func newCoordinator(ctx context.Context, clk reload.Clock, r reload.Reloader) *r
 // children are the two apps, each with env as its whole environment, but
 // that calibre-server keeps its temporary files in its own folder in
 // /config, which is emptied before each of its starts, with what fails
-// written to logw.
+// written to logw. calibre-server's Serves asks its loopback port for any
+// answer, once each watchEvery: calibre-server 9.19.0 loses a SIGTERM
+// that comes while it starts, and the supervisor sends it one more if it
+// still answers after one.
 func children(l layout, env []string, logw io.Writer) []supervise.Child {
+	client := loopbackClient()
 	return []supervise.Child{
 		{
 			Name: reload.ContentServer.String(),
@@ -363,6 +367,9 @@ func children(l layout, env []string, logw io.Writer) []supervise.Child {
 			},
 			Env:    setEnv(env, "CALIBRE_TEMP_DIR", l.serverTmp()),
 			Before: func() error { return freshDir(l.serverTmp(), logw) },
+			Serves: func(ctx context.Context) error {
+				return answers(ctx, client, "http://"+contentServerAddr+"/", watchEvery)
+			},
 		},
 		{
 			Name: reload.CalibreWeb.String(),
@@ -373,6 +380,54 @@ func children(l layout, env []string, logw io.Writer) []supervise.Child {
 			},
 			Env: env,
 		},
+	}
+}
+
+// answers returns once a GET of target gets an answer, of any status, or
+// with ctx's error once ctx ends. It tries at once, then every every, and
+// gives each try every. A connection the server takes and sends nothing on
+// is no answer: calibre-server's port takes connections before its
+// serving loop runs, and only that loop acts on SIGTERM.
+func answers(ctx context.Context, client *http.Client, target string, every time.Duration) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, http.NoBody)
+	if err != nil {
+		return err
+	}
+	wait := time.NewTimer(every)
+	defer wait.Stop()
+	for {
+		if answered(ctx, client, req, every) {
+			return nil
+		}
+		wait.Reset(every)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-wait.C:
+		}
+	}
+}
+
+// answered sends req with client, and reports whether an answer came
+// within within.
+func answered(ctx context.Context, client *http.Client, req *http.Request, within time.Duration) bool {
+	try, cancel := context.WithTimeout(ctx, within)
+	defer cancel()
+	resp, err := client.Do(req.Clone(try))
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close() // only that an answer came matters
+	return true
+}
+
+// loopbackClient is the client answers asks an app's loopback port with:
+// no proxy from the environment, no redirect followed, and a new
+// connection each time, so none is left open in the app.
+func loopbackClient() *http.Client {
+	return &http.Client{
+		Transport:     &http.Transport{DisableKeepAlives: true},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
 

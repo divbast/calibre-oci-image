@@ -332,7 +332,7 @@ func TestStartOwnGroup(t *testing.T) {
 	t.Parallel()
 	reap.ensure()
 	reap.begin()
-	p, err := Start(Child{Name: "a", Argv: helperArgv(), Env: helperEnv("hang")})
+	p, err := Start(&Child{Name: "a", Argv: helperArgv(), Env: helperEnv("hang")})
 	if err != nil {
 		reap.abandon()
 		t.Fatal(err)
@@ -503,7 +503,7 @@ func TestStartNeverPassesPasswords(t *testing.T) {
 			t.Fatal(err)
 		}
 		reap.begin()
-		p, err := startProcess(Child{Name: "a", Argv: helperArgv(), Env: c.env}, w)
+		p, err := startProcess(&Child{Name: "a", Argv: helperArgv(), Env: c.env}, w)
 		_ = w.Close()
 		if err != nil {
 			reap.abandon()
@@ -589,5 +589,105 @@ func TestBeforeFails(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("Before ran %d times, want 2", calls)
+	}
+}
+
+// TestStopResendsLostTerm: a child that loses the stop's SIGTERM while it
+// starts, as calibre-server 9.19.0 does, gets one more as soon as it
+// serves, and the stop ends then, with 0, not at the grace.
+func TestStopResendsLostTerm(t *testing.T) {
+	t.Parallel()
+	ls := newLateServe(t, false, 0)
+	h := newHelper(t, always("late-serve"))
+	s, _, _ := newTest(t, h, ls.child("a"))
+	r := runSupervisor(t, s)
+	a := nextStart(t, h)
+	t.Cleanup(func() { _ = syscall.Kill(a.pid, syscall.SIGKILL) })
+
+	r.cancel()
+	waitFile(t, ls.terms) // the child got the stop's SIGTERM, and lost it
+	served := ls.serve(t)
+	select {
+	case code := <-r.code:
+		if code != 0 {
+			t.Errorf("Run returned %d, want 0: the child ended on its second SIGTERM, within the grace", code)
+		}
+		if took := time.Since(served); took > time.Second {
+			t.Errorf("Run returned %s after the child began to serve, want under 1s", took)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return within 1s of the child serving: the SIGTERM it lost was not sent again")
+	}
+	gone(t, a)
+	if n := ls.termCount(t); n != 2 {
+		t.Errorf("the child got %d SIGTERMs, want 2", n)
+	}
+}
+
+// TestRestartResendsLostTerm: a child that loses a Restart's SIGTERM while
+// it starts gets one more as soon as it serves, and the Restart's start
+// comes then, not at the grace.
+func TestRestartResendsLostTerm(t *testing.T) {
+	t.Parallel()
+	ls := newLateServe(t, false, 0)
+	h := newHelper(t, func(n int) string {
+		if n == 1 {
+			return "late-serve"
+		}
+		return "wait"
+	})
+	s, _, _ := newTest(t, h, ls.child("a"))
+	r := runSupervisor(t, s)
+	first := nextStart(t, h)
+	t.Cleanup(func() { _ = syscall.Kill(first.pid, syscall.SIGKILL) })
+
+	errc := restartAsync(s)
+	waitFile(t, ls.terms)
+	served := ls.serve(t)
+	select {
+	case err := <-errc:
+		if err != nil {
+			t.Errorf("Restart = %v, want nil", err)
+		}
+		if took := time.Since(served); took > time.Second {
+			t.Errorf("Restart returned %s after the child began to serve, want under 1s", took)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Restart did not return within 1s of the child serving: the SIGTERM it lost was not sent again")
+	}
+	second := nextStart(t, h)
+	gone(t, first)
+	if n := ls.termCount(t); n != 2 {
+		t.Errorf("the first child got %d SIGTERMs, want 2", n)
+	}
+	if code := r.stop(t); code != 0 {
+		t.Errorf("Run returned %d, want 0", code)
+	}
+	gone(t, second)
+}
+
+// TestServingChildGetsOneTerm: a child that serves before the stop acts on
+// its SIGTERM, and gets no second one while it takes its time to end. One
+// that only serves gets none.
+func TestServingChildGetsOneTerm(t *testing.T) {
+	t.Parallel()
+	ls := newLateServe(t, true, 600)
+	h := newHelper(t, always("late-serve"))
+	s, _, _ := newTest(t, h, ls.child("a"))
+	r := runSupervisor(t, s)
+	a := nextStart(t, h)
+	t.Cleanup(func() { _ = syscall.Kill(a.pid, syscall.SIGKILL) })
+
+	waitFile(t, ls.serving)
+	expectNoStart(t, h)
+	if n := ls.termCount(t); n != 0 {
+		t.Fatalf("the child got %d SIGTERMs while it served, want none", n)
+	}
+	if code := r.stop(t); code != 0 {
+		t.Errorf("Run returned %d, want 0", code)
+	}
+	gone(t, a)
+	if n := ls.termCount(t); n != 1 {
+		t.Errorf("the child got %d SIGTERMs, want 1", n)
 	}
 }

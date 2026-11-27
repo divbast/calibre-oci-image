@@ -81,6 +81,8 @@ func helperMain(mode string) int {
 		}
 		ready(f)
 		sleepForever()
+	case "late-serve":
+		return lateServeMain(f, code)
 	case "echo":
 		if _, err := io.Copy(os.Stdout, os.Stdin); err != nil {
 			return 2
@@ -140,6 +142,148 @@ func helperMain(mode string) int {
 		return 0
 	}
 	return 2
+}
+
+// lateServeMain is the late-serve child, which starts as calibre-server
+// 9.19.0 does: each SIGTERM it gets before it serves is lost. It serves
+// once the file HELPER_GO names exists, and then makes the file
+// HELPER_SERVING names. A SIGTERM while it serves ends it: it removes that
+// file at once, and exits HELPER_SLEEP_MS later, as a server takes a while
+// to stop. Each SIGTERM it gets adds a line to the file HELPER_TERMS names.
+func lateServeMain(f *os.File, code int) int {
+	term := make(chan os.Signal, 4)
+	signal.Notify(term, syscall.SIGTERM)
+	ready(f)
+	goFile, serving, terms := os.Getenv("HELPER_GO"), os.Getenv("HELPER_SERVING"), os.Getenv("HELPER_TERMS")
+	ms, _ := strconv.Atoi(os.Getenv("HELPER_SLEEP_MS"))
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	var exit <-chan time.Time
+	serves, stopping := false, false
+	for {
+		select {
+		case <-term:
+			if appendLine(terms) != nil {
+				return 2
+			}
+			if serves && !stopping {
+				stopping = true
+				if os.Remove(serving) != nil { //nolint:gosec // G703: the test's own file, named in the child's environment by the test
+					return 2
+				}
+				exit = time.After(time.Duration(ms) * time.Millisecond)
+			}
+		case <-exit:
+			return code
+		case <-tick.C:
+			if _, err := os.Stat(goFile); err == nil && !serves { //nolint:gosec // G703: the test's own file, named in the child's environment by the test
+				serves = true
+				if os.WriteFile(serving, nil, 0o600) != nil { //nolint:gosec // G703: the test's own file, named in the child's environment by the test
+					return 2
+				}
+			}
+		}
+	}
+}
+
+// appendLine adds one line to the file at path.
+func appendLine(path string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // G304: a test's own file
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString("term\n"); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// lateServe is a late-serve child's files, in a folder of the test's own.
+type lateServe struct {
+	goFile, serving, terms string
+	sleepMS                int
+}
+
+// newLateServe is a late-serve child that serves at once when atOnce is
+// true, and otherwise once the test calls serve, and that exits sleepMS
+// after the SIGTERM that ends it.
+func newLateServe(t *testing.T, atOnce bool, sleepMS int) *lateServe {
+	t.Helper()
+	dir := t.TempDir()
+	ls := &lateServe{goFile: dir + "/go", serving: dir + "/serving", terms: dir + "/terms", sleepMS: sleepMS}
+	if atOnce {
+		if err := os.WriteFile(ls.goFile, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return ls
+}
+
+// child is the Child named name that runs ls, with ls.serves as its
+// Serves.
+func (ls *lateServe) child(name string) Child {
+	return Child{
+		Name: name,
+		Env: []string{
+			"HELPER_GO=" + ls.goFile, "HELPER_SERVING=" + ls.serving, "HELPER_TERMS=" + ls.terms,
+			"HELPER_SLEEP_MS=" + strconv.Itoa(ls.sleepMS),
+		},
+		Serves: ls.serves,
+	}
+}
+
+// serves is the child's Serves. It first waits a fifth of a second, as a
+// request made after a SIGTERM reaches a server that has seen it, and then
+// looks for the serving file every 10 ms.
+func (ls *lateServe) serves(ctx context.Context) error {
+	wait := time.NewTimer(200 * time.Millisecond)
+	defer wait.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-wait.C:
+		}
+		if _, err := os.Stat(ls.serving); err == nil {
+			return nil
+		}
+		wait.Reset(10 * time.Millisecond)
+	}
+}
+
+// serve has the child serve, and returns the time it was told to.
+func (ls *lateServe) serve(t *testing.T) time.Time {
+	t.Helper()
+	at := time.Now()
+	if err := os.WriteFile(ls.goFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return at
+}
+
+// termCount is how many SIGTERMs the child has got.
+func (ls *lateServe) termCount(t *testing.T) int {
+	t.Helper()
+	b, err := os.ReadFile(ls.terms)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Count(string(b), "\n")
+}
+
+// waitFile waits until path exists.
+func waitFile(t *testing.T, path string) {
+	t.Helper()
+	for end := time.Now().Add(waitFor); time.Now().Before(end); time.Sleep(5 * time.Millisecond) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+	}
+	t.Fatalf("%s never appeared", path)
 }
 
 // startLeaf starts a process in the helper's own group that ignores
@@ -221,7 +365,8 @@ func always(mode string) func(int) string {
 	return func(int) string { return mode }
 }
 
-func (h *helper) start(c Child) (*os.Process, error) {
+func (h *helper) start(child *Child) (*os.Process, error) {
+	c := *child // the supervisor's own Child is never changed
 	h.n++
 	n := h.n
 	if h.gate != nil {
@@ -233,7 +378,7 @@ func (h *helper) start(c Child) (*os.Process, error) {
 	}
 	c.Argv = helperArgv()
 	c.Env = helperEnv(h.mode(n), append(c.Env, "HELPER_READY=3")...)
-	p, err := startProcess(c, w)
+	p, err := startProcess(&c, w)
 	_ = w.Close()
 	if err != nil {
 		_ = r.Close()

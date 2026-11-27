@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -132,7 +133,115 @@ func TestChildren(t *testing.T) {
 		if (c.Before != nil) != before {
 			t.Errorf("%s has a Before: %t, want %t", c.Name, c.Before != nil, before)
 		}
+		// Only calibre-server loses a SIGTERM while it starts
+		if serves := c.Name == "calibre-server"; (c.Serves != nil) != serves {
+			t.Errorf("%s has a Serves: %t, want %t", c.Name, c.Serves != nil, serves)
+		}
 	}
+}
+
+// TestAnswers: answers returns once the server sends any answer, a 401
+// too; a port that takes the connection and sends nothing is no answer,
+// nor is a refused one, and answers keeps trying until ctx ends.
+func TestAnswers(t *testing.T) {
+	t.Parallel()
+	const every = 20 * time.Millisecond
+	t.Run("an answer", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		t.Cleanup(srv.Close)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		if err := answers(ctx, loopbackClient(), srv.URL+"/", every); err != nil {
+			t.Errorf("answers = %v, want nil: a 401 is an answer", err)
+		}
+	})
+	t.Run("silent, then refused, then an answer", func(t *testing.T) {
+		t.Parallel()
+		ln, err := listen(t, "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := ln.Addr().String()
+		got := make(chan error, 1)
+		go func() { got <- answers(t.Context(), loopbackClient(), "http://"+addr+"/", every) }()
+		// The port takes each connection and sends nothing, as
+		// calibre-server's does before its serving loop runs, then refuses
+		// them
+		var taken atomic.Int32
+		var mu sync.Mutex
+		var held []net.Conn
+		go func() {
+			for {
+				conn, aerr := ln.Accept()
+				if aerr != nil {
+					return
+				}
+				taken.Add(1)
+				mu.Lock()
+				held = append(held, conn)
+				mu.Unlock()
+			}
+		}()
+		t.Cleanup(func() {
+			mu.Lock()
+			defer mu.Unlock()
+			for _, c := range held {
+				_ = c.Close()
+			}
+		})
+		select {
+		case gerr := <-got:
+			t.Fatalf("answers = %v while the port took connections and sent nothing", gerr)
+		case <-time.After(5 * every):
+		}
+		if taken.Load() == 0 {
+			t.Fatal("answers made no connection while the port took them")
+		}
+		_ = ln.Close()
+		select {
+		case gerr := <-got:
+			t.Fatalf("answers = %v while the port refused connections", gerr)
+		case <-time.After(5 * every):
+		}
+		ln, err = listen(t, addr)
+		if err != nil {
+			t.Skipf("the port went to another program meanwhile: %v", err)
+		}
+		srv := &http.Server{Handler: http.NotFoundHandler(), ReadHeaderTimeout: time.Second}
+		go func() { _ = srv.Serve(ln) }()
+		t.Cleanup(func() { _ = srv.Close() })
+		select {
+		case gerr := <-got:
+			if gerr != nil {
+				t.Errorf("answers = %v, want nil: a 404 is an answer", gerr)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("answers did not return once the server answered")
+		}
+	})
+	t.Run("ctx ends", func(t *testing.T) {
+		t.Parallel()
+		ln, err := listen(t, "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := ln.Addr().String()
+		_ = ln.Close()
+		ctx, cancel := context.WithTimeout(t.Context(), 5*every)
+		defer cancel()
+		if err := answers(ctx, loopbackClient(), "http://"+addr+"/", every); !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("answers = %v, want ctx's error", err)
+		}
+	})
+}
+
+// listen listens on addr, on TCP, until the test ends.
+func listen(t *testing.T, addr string) (net.Listener, error) {
+	t.Helper()
+	return (&net.ListenConfig{}).Listen(t.Context(), "tcp", addr)
 }
 
 // TestServerTmpFresh: calibre-server's Before leaves its folder of
