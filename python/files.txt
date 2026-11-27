@@ -39,7 +39,6 @@ a5e246f79eb80475e691bf93862cead98decd8a498cf53ba0516fcdc0f50dc1c https://files.p
 8bb5376d2006950386f8c6427613334a2acadc5f559cb80e638d00b4df957e37 https://files.pythonhosted.org/packages/31/7d/164b7ffc8624fe9efb4221bf9af485d5c1e41b9ae118045d2b6dc5457d8b/click-8.5.1-py3-none-any.whl
 a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0 https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl
 e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1 https://files.pythonhosted.org/packages/32/d1/a3652fe2c19134d0d15922177821d863cbd7e842d53a21bbe7e8e3a1b5ac/certifi-2026.10.23-py3-none-any.whl
-b2163a246c585894d808f18783e19137cb70a0c18fb36748dc01fc6f109c1646 https://files.pythonhosted.org/packages/33/24/033604d30f6cf82d661c0f9dfc2c71d52cafc2de516616f80d3b0600cb7c/pycountry-22.3.5.tar.gz
 046e1132c71fcf3330438a539928932caf51ddbc582496833e23de611de14562 https://files.pythonhosted.org/packages/33/55/af02708f230eb77084a299d7b08175cff006dea4f2721074b92cdb0296c0/ordered_set-4.1.0-py3-none-any.whl
 b8488090f8acffbcb6b5d6a85571a6827a0a2981ffb75e5a0b27b87c4a6b7dd0 https://files.pythonhosted.org/packages/33/fd/8762f7ee3e4e4be6d1d846cffb4916dd9bb02b2f800d3603718a0efe494c/pybind11-3.1.0-py3-none-any.whl
 d775a5e43e9088f507a6250d57fcf5678eb31268c545feb5064ffeee33735622 https://files.pythonhosted.org/packages/35/54/7368ce188625e39acc03ee362bb86cc9bfa6ad15e25c50889ae36e2889b3/ninja-1.13.2-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl
@@ -110,6 +109,7 @@ c3c7606c27503ad8d501270406e345ddb480a7b5f38827eafe4fa82a137f0021 https://files.p
 0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3 https://files.pythonhosted.org/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl
 258fde948cf45aab5df23fcc9e17a9050ee73d4e1002fe6cf86519f61c414778 https://files.pythonhosted.org/packages/96/62/0c1cf20fe158b0e623e78acbf5fb6de5f1410a408f65f727e4090497627b/meson_python-0.22.1-py3-none-any.whl
 f6f868a457a6bd485b78d26e619045718bcd0b7720a6bf97d5fe86a1523423e8 https://files.pythonhosted.org/packages/96/bd/72bace0bf4025af8ab4bf972394fab466d4b565cdbea805281fbee9a8dbc/py7zr-1.1.4-py3-none-any.whl
+115c4baf7cceaa30f59a4694d79483c9167dbce7a9de4d3d571c5f3ea77c305a https://files.pythonhosted.org/packages/9c/42/7703bd45b62fecd44cd7d3495423097e2f7d28bc2e99e7c1af68892ab157/pycountry-26.2.16-py3-none-any.whl
 82e7a6ab08fcb27879864ddf63dbb529fb032ca336c331cb1597d6dd8b47c92e https://files.pythonhosted.org/packages/9c/47/1d02221cde942fdd7a4ce4a940682e0b054534215ab02ffdee4955e4d66c/httplib2-0.32.1-py3-none-any.whl
 7b46165bb56eb4704e2eaaf86f3c940d19154535d9b0ca7d6d590b04060e00d5 https://files.pythonhosted.org/packages/9d/af/182eb91b0df3fe75c4d9f26fe70684569566745f6ba7e5c9c73a862c5252/cryptography-50.0.2.tar.gz
 b8eaebd6d32565ce85b79b17e2aa52815889249b37bb6dd0894d3eca67c329f8 https://files.pythonhosted.org/packages/9e/16/428cc7df8670f407c7810882cf736dbc04163ec60589f3bd8ebb6a2c263a/texttable-1.7.3-py2.py3-none-any.whl

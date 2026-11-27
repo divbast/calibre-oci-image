@@ -3,7 +3,7 @@
 # https://raw.githubusercontent.com/janeczku/calibre-web/79d35711d73491881ecd2b13ded02c277543dbcb/optional-requirements.txt
 # and python/pins.txt, for Linux and Python 3.15.
 # Do not edit it: change the pins, then run go run ./cmd/divbast-pins again.
---no-binary brotli,cffi,cryptography,faust-cchardet,flask-principal,gevent,goodreads,greenlet,inflate64,levenshtein,lxml,markupsafe,netifaces-plus,nh3,pillow,psutil,pybcj,pycountry,pycryptodomex,pyppmd,python-ldap,pyyaml,rapidfuzz,rauth,regex,rpds-py,tornado,wordninja,zope-interface
+--no-binary brotli,cffi,cryptography,faust-cchardet,flask-principal,gevent,goodreads,greenlet,inflate64,levenshtein,lxml,markupsafe,netifaces-plus,nh3,pillow,psutil,pybcj,pycryptodomex,pyppmd,python-ldap,pyyaml,rapidfuzz,rauth,regex,rpds-py,tornado,wordninja,zope-interface
 
 # pins.txt: needed by sphinx 9.2.0, which requires it, though upstream's list leaves it out
 alabaster==1.0.0 \
@@ -313,9 +313,9 @@ pyasn1-modules==0.4.2 \
 pybcj==1.0.8 \
     --hash=sha256:6818270692912d47e81ccd777b7d0ed2ad3a19ef7aaead3735b38048c80bf368
 
-# pins.txt: upstream leaves it unpinned (>=20.0.0,<27.0.0); built from source
-pycountry==22.3.5 \
-    --hash=sha256:b2163a246c585894d808f18783e19137cb70a0c18fb36748dc01fc6f109c1646
+# pins.txt: upstream leaves it unpinned (>=20.0.0,<27.0.0)
+pycountry==26.2.16 \
+    --hash=sha256:115c4baf7cceaa30f59a4694d79483c9167dbce7a9de4d3d571c5f3ea77c305a
 
 # pins.txt: needed by cffi 2.1.1, which requires it, though upstream's list leaves it out
 pycparser==3.12 \
