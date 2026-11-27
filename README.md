@@ -591,9 +591,13 @@ Such a call must see what Calibre-Web has just changed. So after an
 edit in Calibre-Web, its reads through the Content Server wait a few
 seconds, until the Content Server has restarted with the edit in it:
 
-- A read right after an edit has PID 1 restart the Content Server at
-  once, without the 5 seconds of quiet, as soon as no other request to
-  it is being answered. It then waits for the restart, about a second.
+- A read right after an edit has PID 1 restart the Content Server
+  without the 5 seconds of quiet, as soon as no other request to it is
+  being answered: at once, or, when the Content Server started less than
+  5 seconds before, 5 seconds after that start. The read then waits for
+  the restart, about a second. In the image's tests, a download right
+  after an edit in a container that had just started came after 3 to 4
+  seconds.
 - Bulk work, such as a Kobo's first sync, which converts each book to
   KEPUB, reads and changes book after book. It restarts the Content
   Server at most every 5 seconds, so each read waits up to about 5
