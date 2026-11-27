@@ -101,11 +101,18 @@ is a breaking change.
   Calibre-Web's `/reconnect`, which PID 1 alone calls, and to which 8083
   answers 404. calibre-server alone gets `CALIBRE_TEMP_DIR=
   /config/calibre/tmp`, in place of the image's `/tmp`: an add through
-  8080 leaves its copies there until calibre-server ends (four at once,
-  three after, of a 300 MiB book: 1.2 GiB, then 900 MiB). The
-  supervisor's `Before` makes that folder afresh, 0700, before each
+  8080 leaves two or three copies there, and one more for a few seconds
+  (a 300 MiB book: 1.2 GiB, then 900 MiB), and they add up, add after
+  add, until calibre-server ends: the user's answer is to document it,
+  with Calibre-Web or a container restart for a large import. The
+  supervisor's `Before` empties that folder in place before each
   calibre-server start, first, crash and planned alike, and never while it
-  runs. Everything else keeps `/tmp`. Never `QTWEBENGINE_DISABLE_SANDBOX`
+  runs, then sets it 0700. It never removes or replaces the folder, which
+  may be a volume. An entry it cannot remove stays, with one log line that
+  names it and gives `Writable`'s chown hint, and calibre-server starts.
+  It refuses a symbolic link there, unfollowed, and a file, with one line
+  each try: emptying where a link points could empty more than temporary
+  files. Everything else keeps `/tmp`
 - **The supervisor's times are the user's**: a child that ends on its own
   starts again after 1 s, doubling to 60 s, back to 1 s after 10 minutes
   up. A stop gives each child 8 s after SIGTERM, then SIGKILL to its
@@ -146,23 +153,35 @@ is a breaking change.
   is let go when a conversion starts, so a held export never waits for a
   conversion. Without this a download right after a Calibre-Web edit
   answered 404 for 5.5 s, then came without its metadata, and a KEPUB
-  conversion failed. `show_metadata`, which Calibre's own conversions
-  read first, is not held while a restart is only to come, so such a
-  conversion within about 5 s of an edit may use the old metadata
-- **Every request of the wrapper counts as Calibre-Web's**, one that can
-  change the library, open and for 10 s after: Calibre-Web converts in
-  the background, with no request of its own open, reading the book
-  through `calibredb` first, and its write would otherwise fall in
-  calibre-server's own start after the restart the read brought on, and
-  be lost (a Kobo's first sync of 20 EPUBs left the Content Server
-  without the last KEPUBs). A first sync of 20 EPUBs now takes 20
-  restarts, one each 5.1 s, 99 s in all, 0.21-0.31 s down each, and 86
-  of 471 reads through 8080 answered 503 meanwhile
+  conversion failed. The user accepted the cost: every download, send
+  and KEPUB carries the book's current metadata. `show_metadata`, which
+  Calibre's own conversions (not kepubify) read first, is not held while
+  a restart is only to come, so such a conversion within about 5 s of an
+  edit may use the old metadata
+- **A wrapper request only breaks a tie with calibre-server's own
+  start.** A change seen while one is open, or within 10 s after it,
+  that no request of either app and no conversion can be the cause of,
+  and that falls in calibre-server's own start, is Calibre-Web's, not
+  the start's: Calibre-Web converts in the background, with no request
+  of its own open, reading the book through `calibredb` first, and its
+  write would otherwise fall in calibre-server's own start after the
+  restart the read brought on, and be lost (a Kobo's first sync of 20
+  EPUBs left the Content Server without the last KEPUBs). It counts for
+  nothing else: a change during a mutating 8080 request, or within 10 s
+  after one, is never Calibre-Web's for a wrapper request alone, so an
+  8080 edit after a Calibre-Web download never restarts calibre-server.
+  A first sync of 20 EPUBs takes 20 restarts, one each 5.1 s, 99 s in
+  all, 0.21-0.31 s down each, and 86 of 471 reads through 8080 answered
+  503 meanwhile
 - **During a restart, any 8080 request from a loopback peer waits** for
   the new calibre-server, bounded by its own context, rather than getting
   503; `show_metadata` among them. `calibredb`'s first request of each
-  call carries no login yet, and only the image's own tools come from
-  loopback
+  call carries no login yet. A loopback peer is not only the image's own
+  tools: in a Kubernetes pod, the pod's other containers and `kubectl
+  port-forward` reach 127.0.0.1, and with host networking the host's
+  programs do. Such a client waits out restarts too, and, sending Digest
+  as `calibre-web` on an export, can bring forward a restart that is
+  already due; it cannot call for one
 - **8080 answers a body past calibre-server's own limit itself**: a
   `Content-Length` over 524,288,000 bytes, calibre-server's 500 MB
   default `--max-request-body-size`, which the image keeps, gets 413 with
@@ -288,7 +307,8 @@ or read in upstream's source where the line says so:
   ("GLOzone not found for unknown"): Qt turns the GPU off itself only
   while the variable is unset. With all three, each page-drawing process
   logs "Activated seccomp-bpf sandbox for process type: renderer" on
-  both engines
+  both engines. Never `QTWEBENGINE_DISABLE_SANDBOX`: it turns Chromium's
+  whole sandbox off, the seccomp-bpf filter with it
 - Without libc-bin's `C.utf8`, Qt warned of a `C` locale at every
   calibre-server start; with it, never. Calibre names its folders and
   files in ASCII, and Calibre-Web in Unicode, whatever the locale; each

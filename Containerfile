@@ -793,8 +793,9 @@ COPY --from=probe --chown=65532:65532 /out/books /books
 # UTF-8 for both apps and the tools they run; no .pyc written at run
 # time, on a read-only root, which the build compiled already; and each
 # log line to the engine as it is written. Calibre keeps its settings in
-# /config/calibre, its temporary files and its cache in /tmp; Calibre-Web
-# its cache in /config/calibre-web. Wand finds ImageMagick by MAGICK_HOME.
+# /config/calibre, and its temporary files and its cache in /tmp, but for
+# calibre-server, whose temporary files PID 1 sends to
+# /config/calibre/tmp; Calibre-Web its cache in /config/calibre-web. Wand finds ImageMagick by MAGICK_HOME.
 # Chromium, which draws the pages of Calibre's PDF output, runs without
 # a GPU, without its namespace sandbox, and with its shared memory in
 # /tmp: rootless Podman lets it try a namespace sandbox that then fails,

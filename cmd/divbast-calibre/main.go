@@ -478,10 +478,10 @@ type events interface {
 // requests are also gated, and the answers about conversions read; an
 // export by Calibre-Web's own calibredb, for a download or a send, has
 // look look at the library first, then is held until calibre-server reads
-// the library as it is; every request of that calibredb counts as
-// Calibre-Web's too; and any other request from inside the container,
-// show_metadata's among them, waits while calibre-server restarts, rather
-// than being refused.
+// the library as it is; every request of that calibredb is told to the
+// Coordinator as one (see reload.Coordinator.WrapperStarted); and any
+// other request from the loopback, show_metadata's among them, waits
+// while calibre-server restarts, rather than being refused.
 func hooks(apps events, app reload.App, look func(), logw io.Writer) proxy.Hooks {
 	h := proxy.Hooks{
 		Started: func(r *http.Request) func(int) { return apps.RequestStarted(app, r.Method, r.URL.Path) },
@@ -527,9 +527,11 @@ func hooks(apps events, app reload.App, look func(), logw io.Writer) proxy.Hooks
 }
 
 // fromWrapper reports whether r comes from Calibre-Web's own calibredb,
-// the image's wrapper: from the loopback, as no client outside the
-// container can, and logged in by digest as the Content Server's internal
-// user. Both must hold.
+// the image's wrapper: from the loopback (see fromLoopback), and logged in
+// by digest as the Content Server's internal user. Both must hold. The
+// username is no secret, so another loopback client can send it too; it
+// can then bring forward, by an export, a restart that is already due,
+// and call for none.
 func fromWrapper(r *http.Request) bool {
 	return fromLoopback(r) && digestUser(r.Header.Get("Authorization")) == firststart.InternalUser
 }
@@ -545,7 +547,9 @@ func isExport(path string) bool {
 }
 
 // fromLoopback reports whether r's TCP peer is a loopback address: a
-// program inside the container, which only the image's own tools are.
+// program that shares the container's network. That is the image's own
+// tools, and also, in a Kubernetes pod, the pod's other containers and
+// kubectl port-forward, and, with host networking, the host's programs.
 func fromLoopback(r *http.Request) bool {
 	peer, err := netip.ParseAddrPort(r.RemoteAddr)
 	return err == nil && peer.Addr().Unmap().IsLoopback()

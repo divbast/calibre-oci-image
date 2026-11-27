@@ -446,11 +446,15 @@ The examples give it 2 GiB. <!-- tmp-size --> A tmpfs keeps its files in
 memory, so what `/tmp` holds counts as the container's memory.
 
 The Content Server keeps its own temporary files in
-`/config/calibre/tmp` instead, through `CALIBRE_TEMP_DIR`. A book added
-through it leaves four copies there, which the Content Server deletes
-only when it stops: three while it runs, one for a few seconds. PID 1
-empties that folder before each start of the Content Server, and never
-while it runs.
+`/config/calibre/tmp` instead, through `CALIBRE_TEMP_DIR`. Each book
+added through it leaves two or three copies of itself there, and one
+more for a few seconds while it is added. The Content Server deletes
+them only when it stops, so they add up, book after book, until its next
+restart: after any change made in Calibre-Web, or when the container
+restarts. PID 1 empties that folder before each start of the Content
+Server, and never while it runs. So a large import goes better through
+Calibre-Web, on port 8083, or with a restart of the container after it.
+When `/config` is full, Calibre-Web cannot save its settings either.
 
 In the image's measurements:
 
@@ -470,8 +474,9 @@ In the image's measurements:
   own limit, `--max-request-body-size`, which the image keeps. PID 1
   answers a larger one itself with the Content Server's
   `413 Request Entity Too Large`, so that the reason reaches the browser.
-  The Content Server's copies go to `/config`, so the volume needs room
-  for four times the book.
+  The Content Server's copies go to `/config/calibre/tmp` and stay there
+  until its next restart, so `/config` needs room for two or three times
+  each book added since then, and one more copy while a book is added.
 - **Port 8083**, Calibre-Web, sets no limit of its own: a book of about
   1 GiB fits, since it holds two copies in the 2 GiB `/tmp` while it takes
   it. <!-- tmp-size -->
@@ -598,11 +603,12 @@ seconds, until the Content Server has restarted with the edit in it:
   for the restart, about a second. In the image's tests, a download right
   after an edit in a container that had just started came after 3 to 4
   seconds.
-- A conversion started within about 5 seconds of an edit to the same
-  book may use the book's previous metadata: Calibre's own conversions
-  read the metadata first, and that read does not wait.
+- A conversion to any format but KEPUB, started within about 5 seconds
+  of an edit to the same book, may use the book's previous metadata:
+  Calibre's own conversions read the metadata first, and that read does
+  not wait.
 - A conversion to KEPUB reads the book as a download does, and waits
-  too. This has a cost. Converting many books to KEPUB in Calibre-Web,
+  too, so the KEPUB carries the edit. This has a cost. Converting many books to KEPUB in Calibre-Web,
   mostly in a Kobo's first sync, which comes once for each device, takes
   about 5 seconds a book: the Content Server restarts once for each book.
   While those conversions run, the Content Server on port 8080 answers
@@ -611,13 +617,20 @@ seconds, until the Content Server has restarted with the edit in it:
 - While a conversion in the Content Server runs, a download does not
   wait, and carries what the Content Server has: the restart would wait
   for the conversion.
-- During a restart, a request that comes from inside the container,
-  as only the image's own tools do, waits for the new Content Server
-  rather than getting 503.
+- During a restart, a request from a loopback address waits for the new
+  Content Server rather than getting 503. The image's own tools send
+  theirs from there. So can the other containers of a Kubernetes pod,
+  `kubectl port-forward`, and, with host networking, the host's own
+  programs: such a client waits out a restart too, and, logged in as
+  `calibre-web`, can bring forward a restart that is already due.
 - PID 1 knows Calibre-Web's calls by two signs together: they come from
-  inside the container and log in as `calibre-web`. It counts each one
-  as Calibre-Web's own, so that the change Calibre-Web makes after it,
-  such as a converted book, restarts the Content Server.
+  a loopback address and log in as `calibre-web`. Calibre-Web converts a
+  book in the background, and writes it to the library a few seconds
+  after such a call, often while the Content Server is still starting.
+  PID 1 counts that write as Calibre-Web's, so that the Content Server
+  restarts and shows the new format. An edit through port 8080 is never
+  counted as Calibre-Web's for such a call, and never restarts the
+  Content Server.
 
 ### Behind a reverse proxy
 
