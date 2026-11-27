@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"net/url"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -249,6 +250,73 @@ func TestGate(t *testing.T) {
 	deny.Store(false)
 	if w := do(h, untrustedPeer, "POST", "http://calibre.test/x", nil); w.Code != 200 || started.Load() != 1 {
 		t.Fatalf("allowed: %d, started %d", w.Code, started.Load())
+	}
+}
+
+// TestHoldBeforeGateAndStarted: a held request is not counted as started
+// until Hold returns, and then goes through Gate before Started. PID 1's
+// restart of calibre-server waits until no request to it is open, and a
+// held request waits for that restart: counted while held, it would wait
+// for itself. A Hold that fails calls neither Gate nor Started, and
+// nothing reaches upstream.
+func TestHoldBeforeGateAndStarted(t *testing.T) {
+	t.Parallel()
+	b := newBackend(t)
+	var mu sync.Mutex
+	var calls []string
+	call := func(name string) {
+		mu.Lock()
+		calls = append(calls, name)
+		mu.Unlock()
+	}
+	seen := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(calls)
+	}
+	entered, release := make(chan struct{}), make(chan error)
+	h := New(&Config{Target: b.target(), Hooks: Hooks{
+		Hold: func(*http.Request) error {
+			call("Hold")
+			entered <- struct{}{}
+			return <-release
+		},
+		Gate: func(*http.Request) (bool, time.Duration, string) {
+			call("Gate")
+			return false, 0, ""
+		},
+		Started: func(*http.Request) func(int) {
+			call("Started")
+			return func(int) { call("done") }
+		},
+	}})
+	for _, fails := range []bool{false, true} {
+		mu.Lock()
+		calls = nil
+		mu.Unlock()
+		hits := b.hits.Load()
+		answered := make(chan *httptest.ResponseRecorder, 1)
+		go func() { answered <- do(h, untrustedPeer, "POST", "http://calibre.test/x", nil) }()
+		<-entered // every hook before Hold has run
+		if got := seen(); !slices.Equal(got, []string{"Hold"}) {
+			t.Errorf("Hold fails %t: while held, the hooks called were %v, want Hold alone", fails, got)
+		}
+		var err error
+		if fails {
+			err = context.Canceled
+		}
+		release <- err
+		<-answered
+		want, reached := []string{"Hold", "Gate", "Started", "done"}, int32(1)
+		if fails {
+			want, reached = []string{"Hold"}, 0
+		}
+		if got := seen(); !slices.Equal(got, want) {
+			t.Errorf("Hold fails %t: the hooks called were %v, want %v", fails, got, want)
+		}
+		if got := b.hits.Load() - hits; got != reached {
+			t.Errorf("Hold fails %t: upstream got %d requests, want %d", fails, got, reached)
+		}
 	}
 }
 
