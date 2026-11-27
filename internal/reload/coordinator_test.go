@@ -1038,3 +1038,222 @@ func TestReconnectAnswersAtDeadline(t *testing.T) {
 		t.Errorf("a reconnect that answered logged %q", got)
 	}
 }
+
+// hold calls Hold on a goroutine of its own, and returns what it returns.
+func (h *harness) hold(ctx context.Context) <-chan error {
+	errc := make(chan error, 1)
+	go func() { errc <- h.c.Hold(ctx) }()
+	return errc
+}
+
+// held calls Hold on a goroutine of its own, waits until the Coordinator
+// holds it, and returns what it returns.
+func (h *harness) held(ctx context.Context) <-chan error {
+	h.t.Helper()
+	errc := h.hold(ctx)
+	for end := time.Now().Add(time.Second); ; {
+		h.c.mu.Lock()
+		holding := h.c.held != nil
+		h.c.mu.Unlock()
+		if holding {
+			return errc
+		}
+		if time.Now().After(end) {
+			h.t.Fatal("Hold never held the request")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// returned reports whether errc gives a value within a short real time,
+// and the value.
+func returned(errc <-chan error) (bool, error) {
+	select {
+	case err := <-errc:
+		return true, err
+	case <-time.After(100 * time.Millisecond):
+		return false, nil
+	}
+}
+
+// restarted lets the restart under way end, as the supervisor and serve
+// do: calibre-server starts again, and its port accepts.
+func (h *harness) restarted() {
+	h.c.Accepting(ContentServer, h.c.Started(ContentServer))
+}
+
+// TestHold is Calibre-Web's own calibredb asking the Content Server for a
+// book, in each state a restart can be in.
+func TestHold(t *testing.T) {
+	t.Parallel()
+	t.Run("no restart to come: it goes on at once", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		if done, err := returned(h.hold(t.Context())); !done || err != nil {
+			t.Fatalf("Hold returned %t, %v; want at once, nil", done, err)
+		}
+		h.expect(0, 0)
+	})
+	t.Run("a restart to come: it goes at once, and the request after it", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		h.write(CalibreWeb)
+		errc := h.held(t.Context())
+		// No time passes: the restart does not wait for the quiet
+		h.expect(0, 1)
+		if done, _ := returned(errc); done {
+			t.Fatal("Hold returned before the new calibre-server took connections")
+		}
+		h.restarted()
+		if done, err := returned(errc); !done || err != nil {
+			t.Fatalf("once the new calibre-server takes connections, Hold returned %t, %v; want nil", done, err)
+		}
+		h.clk.Advance(time.Hour)
+		h.expect(0, 1)
+	})
+	t.Run("a restart to come and a request open: the restart waits for it", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		h.write(CalibreWeb)
+		open := h.c.RequestStarted(ContentServer, http.MethodGet, "/get/cover/1/books")
+		errc := h.held(t.Context())
+		h.expect(0, 0)
+		open(http.StatusOK)
+		h.expect(0, 1)
+		h.restarted()
+		if done, err := returned(errc); !done || err != nil {
+			t.Fatalf("Hold returned %t, %v; want nil", done, err)
+		}
+	})
+	t.Run("a restart to come and a conversion running: it goes on at once", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		h.c.ConversionStarted(3)
+		h.write(CalibreWeb)
+		if done, err := returned(h.hold(t.Context())); !done || err != nil {
+			t.Fatalf("Hold returned %t, %v; want at once, nil", done, err)
+		}
+		h.clk.Advance(time.Minute)
+		if _, restarts := h.r.counts(); restarts != 0 {
+			t.Errorf("calibre-server restarted %d times while the conversion ran, want 0", restarts)
+		}
+	})
+	t.Run("a conversion starting while it waits: it goes on", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		h.write(CalibreWeb)
+		open := h.c.RequestStarted(ContentServer, http.MethodGet, "/get/cover/1/books")
+		errc := h.held(t.Context())
+		h.c.ConversionStarted(3)
+		if done, err := returned(errc); !done || err != nil {
+			t.Fatalf("once a conversion started, Hold returned %t, %v; want nil", done, err)
+		}
+		open(http.StatusOK)
+		h.clk.Advance(time.Minute)
+		if _, restarts := h.r.counts(); restarts != 0 {
+			t.Errorf("calibre-server restarted %d times while the conversion ran, want 0", restarts)
+		}
+	})
+	t.Run("a restart under way: it waits for the new calibre-server", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		h.write(CalibreWeb)
+		h.clk.Advance(6 * time.Second)
+		h.expect(0, 1)
+		errc := h.held(t.Context())
+		h.restarted()
+		if done, err := returned(errc); !done || err != nil {
+			t.Fatalf("Hold returned %t, %v; want nil", done, err)
+		}
+		h.expect(0, 1)
+	})
+	t.Run("the client gone: it returns the context's error", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		h.write(CalibreWeb)
+		h.clk.Advance(6 * time.Second)
+		ctx, cancel := context.WithCancel(t.Context())
+		errc := h.held(ctx)
+		cancel()
+		if done, err := returned(errc); !done || err == nil {
+			t.Fatalf("Hold returned %t, %v; want the context's error", done, err)
+		}
+	})
+	t.Run("the Coordinator stopping: it goes on", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		h.write(CalibreWeb)
+		h.clk.Advance(6 * time.Second)
+		errc := h.held(t.Context())
+		h.c.Stop()
+		if done, err := returned(errc); !done || err != nil {
+			t.Fatalf("Hold returned %t, %v; want nil", done, err)
+		}
+	})
+	t.Run("the hurry ends with the restart", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		h.write(CalibreWeb)
+		errc := h.held(t.Context())
+		h.restarted()
+		if done, _ := returned(errc); !done {
+			t.Fatal("Hold never returned")
+		}
+		// The next change waits for its quiet again
+		h.clk.Advance(time.Minute)
+		h.write(CalibreWeb)
+		h.clk.Advance(4 * time.Second)
+		h.expect(0, 1)
+		h.clk.Advance(2 * time.Second)
+		h.expect(0, 2)
+	})
+}
+
+// TestWrapperCountsForCalibreWeb is a Kobo's first sync: Calibre-Web
+// converts book after book to KEPUB in the background, with no request
+// of its own open, each time reading the book first through its own
+// calibredb, then writing the new format. A write that falls in
+// calibre-server's own start, after a restart, must still restart it
+// again, as Calibre-Web's, since its calibredb read came just before.
+func TestWrapperCountsForCalibreWeb(t *testing.T) {
+	t.Parallel()
+	for _, open := range []bool{false, true} {
+		name := "a change just after the read"
+		if open {
+			name = "a change while the read is open"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			h.running()
+			h.write(CalibreWeb)
+			h.clk.Advance(6 * time.Second)
+			h.expect(0, 1)
+			h.restarted()
+			// The next conversion, within calibre-server's own start: its
+			// read, and its write
+			h.clk.Advance(time.Second)
+			done := h.c.WrapperStarted()
+			h.clk.Advance(500 * time.Millisecond)
+			if open {
+				h.change()
+				done()
+			} else {
+				done()
+				h.clk.Advance(300 * time.Millisecond)
+				h.change()
+			}
+			h.clk.Advance(time.Minute)
+			h.expect(0, 2)
+		})
+	}
+}

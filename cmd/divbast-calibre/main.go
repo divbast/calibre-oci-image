@@ -66,6 +66,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -278,13 +279,14 @@ func startApps(ctx context.Context, s *settings) int {
 	go func() { ran <- sup.Run(ctx) }()
 
 	failed := make(chan struct{}, 2)
-	if err := serveProxies(ctx, s, apps, login, failed); err != nil {
+	watch := reload.NewWatcher(libraryFiles(s.l), apps.DBChanged)
+	if err := serveProxies(ctx, s, apps, watch.Look, login, failed); err != nil {
 		say(s.stderr, "%v", err)
 		cancel()
 		<-ran
 		return 1
 	}
-	go reload.Watch(ctx, libraryFiles(s.l), watchEvery, apps.DBChanged)
+	go watch.Run(ctx, watchEvery)
 
 	code := 0
 	select {
@@ -367,9 +369,9 @@ func (r *loggedRead) Read(ctx context.Context) (string, error) {
 }
 
 // serveProxies serves port 8080 for the Content Server and 8083 for
-// Calibre-Web, until ctx ends. A proxy that stops serving before then
-// sends to failed.
-func serveProxies(ctx context.Context, s *settings, apps events, login *proxy.LoginHeader, failed chan<- struct{}) error {
+// Calibre-Web, until ctx ends. look looks at the library at once. A proxy
+// that stops serving before then sends to failed.
+func serveProxies(ctx context.Context, s *settings, apps events, look func(), login *proxy.LoginHeader, failed chan<- struct{}) error {
 	ports := []struct {
 		port int
 		app  reload.App
@@ -393,7 +395,7 @@ func serveProxies(ctx context.Context, s *settings, apps events, login *proxy.Lo
 		}
 		p.cfg.Target = &url.URL{Scheme: "http", Host: addr}
 		p.cfg.Trusted = s.trusted
-		p.cfg.Hooks = hooks(apps, p.app, s.stderr)
+		p.cfg.Hooks = hooks(apps, p.app, look, s.stderr)
 		srv := &http.Server{Handler: proxy.New(&p.cfg), ReadHeaderTimeout: readHeaderTimeout}
 		servers = append(servers, srv)
 		go func() {
@@ -423,14 +425,19 @@ const contentServerMaxBody = 500 << 20
 // events is what the proxies tell the Coordinator, and ask it.
 type events interface {
 	RequestStarted(app reload.App, method, path string) (done func(status int))
+	WrapperStarted() (done func())
+	Hold(ctx context.Context) error
 	Gate(app reload.App, method, path string) (deny bool, retryAfter time.Duration, reason string)
 	Answered(method, path string, status int, header http.Header, body []byte, whole bool)
 }
 
 // hooks joins app's proxy to the Coordinator: each request is counted, and
 // each failure the app gives is logged. On the Content Server's port,
-// requests are also gated, and the answers about conversions read.
-func hooks(apps events, app reload.App, logw io.Writer) proxy.Hooks {
+// requests are also gated, and the answers about conversions read; and a
+// request from Calibre-Web's own calibredb has look look at the library
+// first, then is held until calibre-server reads the library as it is,
+// and counts as Calibre-Web's too.
+func hooks(apps events, app reload.App, look func(), logw io.Writer) proxy.Hooks {
 	h := proxy.Hooks{
 		Started: func(r *http.Request) func(int) { return apps.RequestStarted(app, r.Method, r.URL.Path) },
 		Failed: func(r *http.Request, err error) {
@@ -439,6 +446,24 @@ func hooks(apps events, app reload.App, logw io.Writer) proxy.Hooks {
 	}
 	if app != reload.ContentServer {
 		return h
+	}
+	h.Started = func(r *http.Request) func(int) {
+		done := apps.RequestStarted(app, r.Method, r.URL.Path)
+		if !fromWrapper(r) {
+			return done
+		}
+		cw := apps.WrapperStarted()
+		return func(status int) {
+			done(status)
+			cw()
+		}
+	}
+	h.Hold = func(r *http.Request) error {
+		if !fromWrapper(r) {
+			return nil
+		}
+		look()
+		return apps.Hold(r.Context())
 	}
 	h.Gate = func(r *http.Request) (bool, time.Duration, string) { return apps.Gate(app, r.Method, r.URL.Path) }
 	h.Observe = func(r *http.Request) func(int, http.Header, []byte, bool) {
@@ -451,6 +476,34 @@ func hooks(apps events, app reload.App, logw io.Writer) proxy.Hooks {
 		}
 	}
 	return h
+}
+
+// fromWrapper reports whether r comes from Calibre-Web's own calibredb,
+// the image's wrapper: from the loopback, as no client outside the
+// container can, and logged in by digest as the Content Server's internal
+// user. Both must hold.
+func fromWrapper(r *http.Request) bool {
+	peer, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil || !peer.Addr().Unmap().IsLoopback() {
+		return false
+	}
+	return digestUser(r.Header.Get("Authorization")) == firststart.InternalUser
+}
+
+// digestParam is the username of a digest Authorization header.
+var digestParam = regexp.MustCompile(`(?:^|[\s,])username\s*=\s*"([^"]*)"`)
+
+// digestUser returns the username a digest Authorization header gives,
+// or "" for any other header.
+func digestUser(header string) string {
+	scheme, params, _ := strings.Cut(strings.TrimSpace(header), " ")
+	if !strings.EqualFold(scheme, "Digest") {
+		return ""
+	}
+	if m := digestParam.FindStringSubmatch(params); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 // logPath is path as the log shows it: without the token a Kobo's

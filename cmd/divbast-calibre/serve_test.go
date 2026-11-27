@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -253,6 +254,23 @@ type fakeEvents struct {
 	started  []string
 	gated    []string
 	answered []string
+	holds    int
+	wrapped  int // WrapperStarted's done functions called
+}
+
+func (f *fakeEvents) WrapperStarted() func() {
+	return func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.wrapped++
+	}
+}
+
+func (f *fakeEvents) Hold(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.holds++
+	return nil
 }
 
 func (f *fakeEvents) RequestStarted(app reload.App, method, path string) func(int) {
@@ -281,9 +299,9 @@ func TestHooks(t *testing.T) {
 	t.Parallel()
 	f := &fakeEvents{}
 	var log bytes.Buffer
-	cs, cw := hooks(f, reload.ContentServer, &log), hooks(f, reload.CalibreWeb, &log)
-	if cw.Gate != nil || cw.Observe != nil {
-		t.Error("Calibre-Web's port gates requests, or reads answers")
+	cs, cw := hooks(f, reload.ContentServer, func() {}, &log), hooks(f, reload.CalibreWeb, func() {}, &log)
+	if cw.Gate != nil || cw.Observe != nil || cw.Hold != nil {
+		t.Error("Calibre-Web's port gates requests, reads answers, or holds requests")
 	}
 	req := func(method, path string) *http.Request {
 		return httptest.NewRequestWithContext(t.Context(), method, "http://calibre.test"+path, http.NoBody)
@@ -465,5 +483,56 @@ func TestTracker(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Error(err)
+	}
+}
+
+// TestHoldWrapper: on 8080, a request from the loopback that logs in by
+// digest as calibre-web, Calibre-Web's own calibredb, has PID 1 look at
+// the library, is held, and counts as Calibre-Web's once it goes on; no
+// other request is, whatever it shares with it.
+func TestHoldWrapper(t *testing.T) {
+	t.Parallel()
+	const digest = `Digest username="calibre-web", realm="calibre", nonce="n", uri="/cdb/cmd/export/0", response="r"`
+	cases := []struct {
+		name, peer, auth string
+		held             bool
+	}{
+		{"the wrapper, on IPv4", "127.0.0.1:40000", digest, true},
+		{"the wrapper, on IPv6", "[::1]:40000", digest, true},
+		{"the wrapper, IPv4 in IPv6", "[::ffff:127.0.0.1]:40000", digest, true},
+		{"the scheme in other case, the parameter elsewhere", "127.0.0.1:40000", `digest realm="calibre", username="calibre-web", nonce="n"`, true},
+		{"the loopback, no login", "127.0.0.1:40000", "", false},
+		{"the loopback, as admin", "127.0.0.1:40000", `Digest username="admin", realm="calibre"`, false},
+		{"the loopback, Basic", "127.0.0.1:40000", "Basic Y2FsaWJyZS13ZWI6eA==", false},
+		{"the loopback, a name that only ends so", "127.0.0.1:40000", `Digest username="x-calibre-web", realm="calibre"`, false},
+		{"a client outside, as calibre-web", "192.0.2.7:40000", digest, false},
+		{"the container's own address, as calibre-web", "10.89.0.2:40000", digest, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := &fakeEvents{}
+			looks := 0
+			h := hooks(f, reload.ContentServer, func() { looks++ }, io.Discard)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://127.0.0.1:8080/cdb/cmd/export/0", http.NoBody)
+			r.RemoteAddr = tc.peer
+			if tc.auth != "" {
+				r.Header.Set("Authorization", tc.auth)
+			}
+			if err := h.Hold(r); err != nil {
+				t.Fatal(err)
+			}
+			h.Started(r)(http.StatusOK)
+			want := 0
+			if tc.held {
+				want = 1
+			}
+			if looks != want || f.holds != want || f.wrapped != want {
+				t.Errorf("looked %d times, held %d and counted %d for Calibre-Web, want %d each", looks, f.holds, f.wrapped, want)
+			}
+			if len(f.started) != 1 {
+				t.Errorf("Started counted %d requests, want 1", len(f.started))
+			}
+		})
 	}
 }

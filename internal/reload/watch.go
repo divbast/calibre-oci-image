@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"slices"
+	"sync"
 	"time"
 )
 
@@ -33,12 +34,36 @@ func look(paths []string) []fileState {
 	return out
 }
 
-// Watch checks the size and modification time of each file in paths every
-// every, until ctx ends. Each time any of them changes, or a file appears
-// or goes, it calls changed once, with the time it saw the change. What it
-// sees first, when it starts, is the state it compares against.
-func Watch(ctx context.Context, paths []string, every time.Duration, changed func(time.Time)) {
-	last := look(paths)
+// Watcher looks at the size and modification time of each of a list of
+// files, and calls a function each time it finds any of them changed, or
+// a file appeared or gone, with the time it looked. What it sees when it
+// is made is the state it compares against first.
+type Watcher struct {
+	paths   []string
+	changed func(time.Time)
+	mu      sync.Mutex // held while it looks, and calls changed
+	last    []fileState
+}
+
+// NewWatcher returns a Watcher of paths, which calls changed.
+func NewWatcher(paths []string, changed func(time.Time)) *Watcher {
+	return &Watcher{paths: slices.Clone(paths), changed: changed, last: look(paths)}
+}
+
+// Look looks once, now, and calls changed before it returns when it finds
+// a change: one Look that comes after another's finds the change the
+// first found already told.
+func (w *Watcher) Look() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if now := look(w.paths); !slices.Equal(now, w.last) {
+		w.last = now
+		w.changed(time.Now())
+	}
+}
+
+// Run looks every every, until ctx ends.
+func (w *Watcher) Run(ctx context.Context, every time.Duration) {
 	tick := time.NewTicker(every)
 	defer tick.Stop()
 	for {
@@ -47,11 +72,16 @@ func Watch(ctx context.Context, paths []string, every time.Duration, changed fun
 			return
 		case <-tick.C:
 		}
-		if now := look(paths); !slices.Equal(now, last) {
-			last = now
-			changed(time.Now())
-		}
+		w.Look()
 	}
+}
+
+// Watch checks the size and modification time of each file in paths every
+// every, until ctx ends. Each time any of them changes, or a file appears
+// or goes, it calls changed once, with the time it saw the change. What it
+// sees first, when it starts, is the state it compares against.
+func Watch(ctx context.Context, paths []string, every time.Duration, changed func(time.Time)) {
+	NewWatcher(paths, changed).Run(ctx, every)
 }
 
 // WaitAccepting tries to connect to addr every every, and returns once a

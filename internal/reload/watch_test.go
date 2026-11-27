@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -139,5 +140,45 @@ func TestWaitAccepting(t *testing.T) {
 	cancel()
 	if err := WaitAccepting(ctx, "127.0.0.1:1", poll); !errors.Is(err, context.Canceled) {
 		t.Errorf("WaitAccepting() with its context ended = %v, want context.Canceled", err)
+	}
+}
+
+// TestWatcherLook: Look finds a change at once, and tells it before it
+// returns; a second Look, and the next look of Run, find nothing new.
+func TestWatcherLook(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "metadata.db")
+	if err := os.WriteFile(path, []byte("one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	calls := 0
+	w := NewWatcher([]string{path}, func(time.Time) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+	})
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls
+	}
+	w.Look()
+	if got := count(); got != 0 {
+		t.Fatalf("a look with no change told %d changes", got)
+	}
+	if err := os.WriteFile(path, []byte("two, longer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w.Look()
+	if got := count(); got != 1 {
+		t.Fatalf("Look returned having told %d changes, want 1", got)
+	}
+	w.Look()
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	w.Run(ctx, 5*time.Millisecond)
+	if got := count(); got != 1 {
+		t.Errorf("a second Look and Run told %d changes in all, want 1", got)
 	}
 }

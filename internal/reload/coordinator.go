@@ -127,15 +127,17 @@ type Coordinator struct {
 	mu           sync.Mutex
 	stopped      bool
 	apps         [2]appState
-	jobs         map[int]*job // the conversions calibre-server runs, by id
-	unread       []time.Time  // the starts of those whose id could not be read
-	want         [2]bool      // a reload of each app is to come
-	since        [2]time.Time // when each app's reload was first called for
-	quietAt      time.Time    // when the library will have gone Quiet long unchanged
-	quiet        bool         // it has, since the last change
-	restarting   bool         // from a restart's call until the port accepts again
-	restartFrom  int          // calibre-server's starts when the restart was called
-	reconnecting bool         // a reconnect is under way
+	jobs         map[int]*job  // the conversions calibre-server runs, by id
+	unread       []time.Time   // the starts of those whose id could not be read
+	want         [2]bool       // a reload of each app is to come
+	since        [2]time.Time  // when each app's reload was first called for
+	quietAt      time.Time     // when the library will have gone Quiet long unchanged
+	quiet        bool          // it has, since the last change
+	restarting   bool          // from a restart's call until the port accepts again
+	restartFrom  int           // calibre-server's starts when the restart was called
+	reconnecting bool          // a reconnect is under way
+	hurry        bool          // a held request has the restart to come skip the quiet time
+	held         chan struct{} // closed when the held requests may go on; nil while none waits
 	timer        Timer
 	timerAt      time.Time
 	timerGen     int // the latest timer's number; an earlier one firing late leaves it be
@@ -191,8 +193,64 @@ func (c *Coordinator) Stop() {
 		c.timer.Stop()
 		c.timer = nil
 	}
+	c.release()
 	c.mu.Unlock()
 	c.stop()
+}
+
+// Hold is for a request to the Content Server that Calibre-Web's own
+// calibredb makes, to read a book's file or its metadata for Calibre-Web:
+// it returns once calibre-server reads the library as it is, or at once
+// when the request can go on as it is. Calibre-Web reads the library
+// itself, and would otherwise be given the book as calibre-server last
+// read it.
+//
+// While a restart of calibre-server is to come and no conversion runs,
+// Hold has the restart go ahead without waiting for the library to go
+// Quiet: it still waits until no request to the Content Server is open,
+// which the held ones are not. While a restart is to come, or under way,
+// Hold returns once the new calibre-server takes connections. It returns
+// at once when no restart is to come or under way, and while a
+// conversion runs, since the restart then waits for the conversion, up to
+// Cap; and when a conversion starts while it waits. It returns ctx's
+// error when ctx ends first, and nil when the Coordinator stops.
+func (c *Coordinator) Hold(ctx context.Context) error {
+	c.mu.Lock()
+	now := c.clk.Now()
+	c.prune(now)
+	switch {
+	case c.stopped:
+		c.mu.Unlock()
+		return nil
+	case c.restarting:
+	case c.want[ContentServer] && !c.converting(now):
+		c.hurry = true
+	default:
+		c.mu.Unlock()
+		return nil
+	}
+	if c.held == nil {
+		c.held = make(chan struct{})
+	}
+	held := c.held
+	acts := c.step(now)
+	c.mu.Unlock()
+	c.do(acts)
+	select {
+	case <-held:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// release lets every held request go on. The caller holds the lock.
+func (c *Coordinator) release() {
+	if c.held != nil {
+		close(c.held)
+		c.held = nil
+	}
+	c.hurry = false
 }
 
 // RequestStarted tells the Coordinator that a request to app has gone on,
@@ -217,6 +275,33 @@ func (c *Coordinator) RequestStarted(app App, method, path string) (done func(st
 				a.writes--
 				a.wroteAt = now
 			}
+			acts := c.step(now)
+			c.mu.Unlock()
+			c.do(acts)
+		})
+	}
+}
+
+// WrapperStarted tells the Coordinator that Calibre-Web's own calibredb
+// sent a request to the Content Server. It returns the function to call
+// once the request is over. Calibre-Web reads a book that way before it
+// converts it, and writes the new format after, in the background, with
+// no request of its own open, as for each book of a Kobo's first sync.
+// So the request counts as one of Calibre-Web's that can change the
+// library: a change seen while it is open, or Window after it, is put
+// down to Calibre-Web, even within calibre-server's own start.
+func (c *Coordinator) WrapperStarted() (done func()) {
+	c.mu.Lock()
+	a := &c.apps[CalibreWeb]
+	a.writes++
+	c.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			c.mu.Lock()
+			now := c.clk.Now()
+			a.writes--
+			a.wroteAt = now
 			acts := c.step(now)
 			c.mu.Unlock()
 			c.do(acts)
@@ -268,6 +353,7 @@ func (c *Coordinator) conversionRuns(jobID int) {
 	c.mu.Lock()
 	now := c.clk.Now()
 	c.jobs[jobID] = &job{running: true, heard: now}
+	c.converts()
 	acts := c.step(now)
 	c.mu.Unlock()
 	c.do(acts)
@@ -279,9 +365,20 @@ func (c *Coordinator) conversionUnread() {
 	c.mu.Lock()
 	now := c.clk.Now()
 	c.unread = append(c.unread, now)
+	c.converts()
 	acts := c.step(now)
 	c.mu.Unlock()
 	c.do(acts)
+}
+
+// converts lets the held requests go on, as they would have had the
+// conversion that runs now already run when they came, unless a restart
+// is under way: the restart to come now waits for the conversion. The
+// caller holds the lock.
+func (c *Coordinator) converts() {
+	if !c.restarting {
+		c.release()
+	}
 }
 
 // ConversionDone tells the Coordinator that calibre-server answered that
@@ -335,6 +432,7 @@ func (c *Coordinator) Accepting(app App, start int) {
 	a.ownUntil = later(a.ownUntil, now.Add(c.o.Window))
 	if app == ContentServer {
 		c.restarting = false
+		c.release()
 	}
 	acts := c.step(now)
 	c.mu.Unlock()
@@ -455,7 +553,7 @@ func (c *Coordinator) step(now time.Time) (acts actions) {
 	if c.want[ContentServer] && !c.restarting {
 		capped := !now.Before(c.since[ContentServer].Add(c.o.Cap))
 		idle := c.apps[ContentServer].requests == 0 && !c.converting(now)
-		if capped || (c.quiet && idle) {
+		if capped || ((c.quiet || c.hurry) && idle) {
 			c.want[ContentServer] = false
 			c.restarting = true
 			c.restartFrom = c.apps[ContentServer].starts
@@ -564,6 +662,7 @@ func (c *Coordinator) restart() {
 	}
 	c.mu.Lock()
 	c.restarting = false
+	c.release()
 	acts := c.step(c.clk.Now())
 	c.mu.Unlock()
 	c.do(acts)

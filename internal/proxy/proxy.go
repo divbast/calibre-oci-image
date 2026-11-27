@@ -27,14 +27,19 @@ const loginRefusal = "Calibre-Web's login settings could not be read; try again 
 // loginRetryAfter is how many seconds such a source is told to wait.
 const loginRetryAfter = 10 * time.Second
 
-// Hooks lets the caller take part in each request.
+// Hooks lets the caller take part in each request. Every hook gets the
+// request with its path as the app will route it: when the request
+// carries an X-Script-Name that the proxy keeps (it came from a listed
+// source) and the path starts with it, the hooks see the path without that
+// prefix. The request the app receives is not changed. The hooks must not
+// rely on r.URL.RawPath.
 type Hooks struct {
-	// Both hooks get the request with its path as the app will route it:
-	// when the request carries an X-Script-Name that the proxy keeps (it
-	// came from a listed source) and the path starts with it, the hooks see
-	// the path without that prefix. The request the app receives is not
-	// changed. The hooks must not rely on r.URL.RawPath.
-	//
+	// Hold, when set, runs before Gate, and may keep the request waiting:
+	// the request goes on, to Gate, once Hold returns nil. When it returns
+	// an error, which it does once the client has gone, the request goes
+	// no further, and calls neither Gate nor Started.
+	Hold func(*http.Request) error
+
 	// Gate runs before a request goes on. When it denies, the client gets
 	// a 503 with a Retry-After of retryAfter, in whole seconds, and reason
 	// as its one line of text. A denied request does not call Started.
@@ -207,6 +212,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.managed() && !trusted && !h.c.Login.admit(r.Context()) {
 		refuse(w, loginRetryAfter, loginRefusal)
 		return
+	}
+	if hold := h.c.Hooks.Hold; hold != nil {
+		if err := hold(seen); err != nil {
+			return
+		}
 	}
 	if gate := h.c.Hooks.Gate; gate != nil {
 		if deny, after, reason := gate(seen); deny {
