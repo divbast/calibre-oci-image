@@ -194,8 +194,8 @@ imagesize==2.0.1 \
     --hash=sha256:ea0c9a0384df69ed86a943a15cde37d0360b82491b3910dc2215e202e62b5b02
 
 # pins.txt: needed by comicapi 3.2.0, which requires it, though upstream's list leaves it out
-importlib-metadata==9.0.0 \
-    --hash=sha256:2d21d1cc5a017bd0559e36150c21c830ab1dc304dedd1b7ea85d20f45ef3edd7
+importlib-metadata==10.2.0 \
+    --hash=sha256:c7a4bf1c7479601f6b8e437cfc14f4f77028ba62a8f34ae95cd93d9774dfba51
 
 # pins.txt: needed by py7zr 1.1.4, which requires it, though upstream's list leaves it out; built from source
 inflate64==1.0.4 \
