@@ -345,7 +345,7 @@ func serveProxies(ctx context.Context, s *settings, apps events, login *proxy.Lo
 		app  reload.App
 		cfg  proxy.Config
 	}{
-		{8080, reload.ContentServer, proxy.Config{Login: login, StripLoginAlways: true}},
+		{8080, reload.ContentServer, proxy.Config{Login: login, StripLoginAlways: true, MaxBody: contentServerMaxBody}},
 		{8083, reload.CalibreWeb, proxy.Config{Login: login, BlockReconnect: true}},
 	}
 	servers := make([]*http.Server, 0, len(ports))
@@ -381,6 +381,14 @@ func serveProxies(ctx context.Context, s *settings, apps events, login *proxy.Lo
 	}()
 	return nil
 }
+
+// contentServerMaxBody is calibre-server's own limit on a request's body,
+// its --max-request-body-size of 500 MB, counted in MiB, which the image
+// leaves at its default. Port 8080 answers a longer one itself, as
+// calibre-server would: calibre-server answers before it reads the body,
+// and closes, and the proxy, still sending the body, could then only
+// answer 502.
+const contentServerMaxBody = 500 << 20
 
 // events is what the proxies tell the Coordinator, and ask it.
 type events interface {

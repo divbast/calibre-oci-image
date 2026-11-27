@@ -461,3 +461,42 @@ func TestRoutedPathLikeCalibreWeb(t *testing.T) {
 		})
 	}
 }
+
+// TestMaxBody: a request whose Content-Length is past MaxBody gets 413
+// from the proxy, with calibre-server's own words, and reaches neither the
+// app nor Started; one at MaxBody, and a chunked one of any size, go on.
+func TestMaxBody(t *testing.T) {
+	t.Parallel()
+	b := newBackend(t)
+	var started atomic.Int32
+	const limit = 1000
+	h := New(&Config{Target: b.target(), MaxBody: limit, Hooks: Hooks{
+		Started: func(*http.Request) func(int) { started.Add(1); return func(int) {} },
+	}})
+	send := func(size int64, chunked bool) *httptest.ResponseRecorder {
+		r := httptest.NewRequestWithContext(context.Background(), "POST", "http://calibre.test/cdb/add-book/1/y/a.pdf/books", &zeros{n: size})
+		r.RemoteAddr = untrustedPeer
+		r.ContentLength = size
+		if chunked {
+			r.ContentLength = -1
+			r.TransferEncoding = []string{"chunked"}
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	w := send(limit+1, false)
+	want := "The entity sent with the request exceeds the maximum allowed bytes (1000)."
+	if w.Code != http.StatusRequestEntityTooLarge || w.Body.String() != want || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") {
+		t.Fatalf("past the limit: %d %v %q, want 413 and %q", w.Code, w.Header(), w.Body.String(), want)
+	}
+	if b.hits.Load() != 0 || started.Load() != 0 {
+		t.Fatalf("a request past the limit reached the app (%d) or called Started (%d)", b.hits.Load(), started.Load())
+	}
+	if w := send(limit, false); w.Code != http.StatusOK || b.hits.Load() != 1 {
+		t.Fatalf("at the limit: %d, %d requests reached the app, want 200 and 1", w.Code, b.hits.Load())
+	}
+	if w := send(limit+1, true); w.Code != http.StatusOK || b.hits.Load() != 2 {
+		t.Fatalf("chunked, past the limit: %d, %d requests reached the app, want 200 and 2", w.Code, b.hits.Load())
+	}
+}

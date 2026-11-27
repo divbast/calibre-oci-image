@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -79,7 +80,18 @@ type Config struct {
 	StripLoginAlways bool
 	// BlockReconnect answers 404 for /reconnect.
 	BlockReconnect bool
-	Hooks          Hooks
+	// MaxBody, when above 0, is the longest request body the app takes:
+	// a request whose Content-Length is longer gets 413 from the proxy,
+	// which sends none of it on. A chunked body, of no stated length, goes
+	// on, for the app to count.
+	MaxBody int64
+	Hooks   Hooks
+}
+
+// TooLarge is what a request whose body is past Config.MaxBody reads: the
+// words calibre-server answers it with itself.
+func TooLarge(limit int64) string {
+	return fmt.Sprintf("The entity sent with the request exceeds the maximum allowed bytes (%d).", limit)
 }
 
 type handler struct {
@@ -183,6 +195,13 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.c.BlockReconnect && routed == "/reconnect" {
 		http.NotFound(w, r)
+		return
+	}
+	if h.c.MaxBody > 0 && r.ContentLength > h.c.MaxBody {
+		w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
+		w.Header().Set("Connection", "close")
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_, _ = w.Write([]byte(TooLarge(h.c.MaxBody)))
 		return
 	}
 	if h.managed() && !trusted && !h.c.Login.admit(r.Context()) {
