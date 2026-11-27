@@ -278,6 +278,63 @@ func TestWindow(t *testing.T) {
 	}
 }
 
+// TestRefusedWriteNotAnEdit is a request that can change the library,
+// answered with an error, then an edit through the other app 1 s later:
+// once it has ended with a 4xx or a 5xx, the refused request counts for
+// nothing, so only the other app's edit reloads, and an edit through 8080
+// is not refused meanwhile. A bot's POST /xmlrpc.php on a public 8083,
+// answered 404, must not have calibre-server restarted for an 8080 edit.
+// An answer of 2xx or 3xx still counts, as does a refused request still
+// open when the change is seen, since its answer is not known yet.
+func TestRefusedWriteNotAnEdit(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name                 string
+		first, path          string // the first request's app, by port, and path
+		status               int
+		open                 bool // the change is seen while the first is still open
+		reconnects, restarts int
+		paused               bool // 8080 then refuses an edit, a restart being due
+	}{
+		{"a 404 POST on 8083, then an 8080 edit", "8083", "/xmlrpc.php", http.StatusNotFound, false, 1, 0, false},
+		{"a 400 POST on 8083, then an 8080 edit", "8083", "/admin/book/12", http.StatusBadRequest, false, 1, 0, false},
+		{"a 500 POST on 8083, then an 8080 edit", "8083", "/admin/book/12", http.StatusInternalServerError, false, 1, 0, false},
+		{"a 502 POST on 8083, then an 8080 edit", "8083", "/upload", http.StatusBadGateway, false, 1, 0, false},
+		{"a 401 POST on 8080, then an 8083 edit", "8080", "/cdb/set-fields/12", http.StatusUnauthorized, false, 0, 1, true},
+		{"a 403 POST on 8080, then an 8083 edit", "8080", "/cdb/set-fields/12", http.StatusForbidden, false, 0, 1, true},
+		{"a 200 POST on 8083, then an 8080 edit", "8083", "/xmlrpc.php", http.StatusOK, false, 1, 1, true},
+		{"a 302 POST on 8083, then an 8080 edit", "8083", "/admin/book/12", http.StatusFound, false, 1, 1, true},
+		{"a 200 POST on 8080, then an 8083 edit", "8080", "/cdb/set-fields/12", http.StatusOK, false, 1, 1, true},
+		{"a 404 POST on 8083 still open at its change", "8083", "/admin/book/12", http.StatusNotFound, true, 0, 1, true},
+		{"a 401 POST on 8080 still open at its change", "8080", "/cdb/set-fields/12", http.StatusUnauthorized, true, 1, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			h.running()
+			app, other := CalibreWeb, ContentServer
+			if tc.first == "8080" {
+				app, other = ContentServer, CalibreWeb
+			}
+			done := h.c.RequestStarted(app, http.MethodPost, tc.path)
+			if tc.open {
+				h.change()
+				done(tc.status)
+			} else {
+				done(tc.status)
+				h.clk.Advance(time.Second)
+				h.write(other)
+			}
+			if deny, _, why := h.c.Gate(ContentServer, http.MethodPost, "/cdb/set-fields/13"); deny != tc.paused {
+				t.Errorf("the next edit through 8080: refused %t (%q), want %t", deny, why, tc.paused)
+			}
+			h.clk.Advance(time.Minute)
+			h.expect(tc.reconnects, tc.restarts)
+		})
+	}
+}
+
 // TestQuiet is three changes 2 s apart: one reload of each app, 5 s after
 // the last.
 func TestQuiet(t *testing.T) {

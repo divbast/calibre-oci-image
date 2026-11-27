@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -93,8 +94,9 @@ type Options struct {
 //
 // A change is put down to each app with a request that can change the
 // library (see Mutating) open when the change is seen, or ended at most
-// Window before. A conversion calibre-server runs, or ended at most
-// Window before, counts as such a request. A conversion runs from its
+// Window before with an answer below 400 (see RequestStarted). A
+// conversion calibre-server runs, or ended at most Window before, counts
+// as such a request. A conversion runs from its
 // start until a status poll says it no longer runs, until calibre-server
 // starts again, or until 360 s after its start or its last poll, when
 // calibre-server forgets it. When one app made the change,
@@ -295,7 +297,16 @@ func (c *Coordinator) release() {
 
 // RequestStarted tells the Coordinator that a request to app has gone on,
 // with its method and the path the app routes. It returns the function to
-// call once the request is over.
+// call once the request is over, with the status the app answered.
+//
+// A request that can change the library counts as a write while it is
+// open, since its answer is not known yet. Once it is over, it counts for
+// Window only when the app answered it with a status below 400: an app
+// that refused a request, or failed it, changed nothing for it. A request
+// that a client on a public port sends to a route that does not exist,
+// such as a POST that Calibre-Web answers 404, then does not make an edit
+// through the other app that follows look like both apps' edit, which
+// would reload the app that made it.
 func (c *Coordinator) RequestStarted(app App, method, path string) (done func(status int)) {
 	writes := Mutating(app, method, path)
 	c.mu.Lock()
@@ -306,14 +317,16 @@ func (c *Coordinator) RequestStarted(app App, method, path string) (done func(st
 	}
 	c.mu.Unlock()
 	var once sync.Once
-	return func(int) {
+	return func(status int) {
 		once.Do(func() {
 			c.mu.Lock()
 			now := c.clk.Now()
 			a.requests--
 			if writes {
 				a.writes--
-				a.wroteAt = now
+				if status < http.StatusBadRequest {
+					a.wroteAt = now
+				}
 			}
 			acts := c.step(now)
 			c.mu.Unlock()

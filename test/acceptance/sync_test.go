@@ -412,6 +412,34 @@ func TestConversionDelaysRestart(t *testing.T) {
 	checks.True("and the conversion's new format", err == nil, fmt.Sprint(err))
 }
 
+// TestRefusedPostNotAnEdit is what a bot does on a public port 8083: a
+// POST, with no login, to a page Calibre-Web does not have, answered 404.
+// An edit through port 8080 a moment later is then calibre-server's
+// alone: it is not refused, Calibre-Web shows it, and calibre-server,
+// which made it, is not restarted for it.
+func TestRefusedPostNotAnEdit(t *testing.T) {
+	t.Parallel()
+	e, image := underTest(t)
+	tb := redacting(t)
+	ctx := tb.Context()
+	b := serveBooks(tb, e, image, syncBooks, nil)
+	pid, err := appPID(ctx, b.s.C, contentServer)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	xmlrpc := http.Header{"Content-Type": {"text/xml"}}
+	resp, err := b.s.Health().Do(ctx, harness.HostClient(), http.MethodPost, "/xmlrpc.php", xmlrpc, []byte("<methodCall/>"))
+	harness.Answers(tb, "8083: a POST with no login to a page Calibre-Web does not have", http.StatusNotFound, resp, err)
+	resp, err = b.srv.setTitle(ctx, 1, syncedTitle)
+	harness.Answers(tb, "8080: a title edit right after it", http.StatusOK, resp, err)
+	checks := harness.NewChecks(tb)
+	start := time.Now()
+	err = within(ctx, seenWithin, func(ctx context.Context) error { return webShows(ctx, b.web, 1, syncedTitle) })
+	checks.True("Calibre-Web shows the edit within "+seenWithin.String(), err == nil, fmt.Sprintf("after %s: %v", time.Since(start).Round(time.Millisecond), err))
+	other, err := steady(ctx, b.s.C, contentServer, pid, steadyFor)
+	checks.True("calibre-server, which made the edit, keeps its PID", err == nil && other == 0, fmt.Sprintf("PID %d, then %d: %v", pid, other, err))
+}
+
 // edit is one of the two edits of TestSimultaneousEdits: the title it
 // sets, how its app answered, and when it was sent and answered.
 type edit struct {

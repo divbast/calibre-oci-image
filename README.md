@@ -564,6 +564,14 @@ from the requests it passed on to each:
   running.
 - The app that made a change is never reloaded for it.
 
+A request that can change the library counts while the app is still
+answering it. Once the app has answered, it counts for 10 seconds, and
+only if the app did what it was asked: an answer of 400 or more, such as
+`404 Not Found`, means that the app changed nothing. So the requests that
+robots send to any address they find, such as a `POST` to a page
+Calibre-Web does not have, never restart the Content Server after an edit
+made through port 8080.
+
 PID 1 first waits until the library has had no change for 5 seconds. It
 restarts the Content Server only when no request to it is still being
 answered and no conversion it started is still running. A conversion

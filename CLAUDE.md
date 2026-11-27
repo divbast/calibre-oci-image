@@ -120,8 +120,11 @@ is a breaking change.
 - **The two apps stay in step through PID 1.** It polls `metadata.db`, its
   `-journal` and its `-wal` every 1 s, and puts each change down to the app
   with a request that can change the library open, or ended at most 10 s
-  before: `internal/reload/routes.go` lists those routes for each app, and
-  a route it does not know counts as one. A change Calibre-Web made
+  before with an answer below 400: `internal/reload/routes.go` lists those
+  routes for each app, and a route it does not know counts as one. A
+  request the app refused or failed changed nothing, so a POST with no
+  login to a page Calibre-Web does not have, answered 404, never restarts
+  calibre-server for an 8080 edit that follows. A change Calibre-Web made
   restarts calibre-server; one calibre-server made reconnects Calibre-Web;
   the writer is never reloaded. A change during an app's own start or
   reload is that app's own; one nothing explains reloads both. A reload
