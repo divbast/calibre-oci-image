@@ -8,7 +8,7 @@ Babel==2.19.0
 beautifulsoup4==4.15.0
 
 # upstream leaves it unpinned: certifi>=2026.10.18,<2026.11.20
-certifi==2026.10.23
+certifi==2026.11.20
 
 # upstream leaves it unpinned: chardet>=3.0.0,<7.8.0
 chardet==7.7.0
