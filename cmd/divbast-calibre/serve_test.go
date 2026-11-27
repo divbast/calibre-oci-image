@@ -637,8 +637,8 @@ func TestTracker(t *testing.T) {
 
 // TestHoldWrapper: on 8080, an export from the loopback that logs in by
 // digest as calibre-web, Calibre-Web's own calibredb, has PID 1 look at
-// the library, and is held; every request of that calibredb counts as
-// Calibre-Web's once it goes on. No other request is held, whatever it
+// the library, and is held; every request of that calibredb is told as
+// the wrapper's once it goes on. No other request is held, whatever it
 // shares with it: show_metadata, any other request from the loopback,
 // which waits out a restart alone, and any request from outside, which
 // never waits.
@@ -651,7 +651,7 @@ func TestHoldWrapper(t *testing.T) {
 	)
 	cases := []struct {
 		name, peer, auth, path string
-		held, wrapper, waits   bool // held as an export; counted as Calibre-Web's; waiting out a restart alone
+		held, wrapper, waits   bool // held as an export; told as the wrapper's; waiting out a restart alone
 	}{
 		{"the wrapper's export, on IPv4", "127.0.0.1:40000", digest, export, true, true, false},
 		{"the wrapper's export, on IPv6", "[::1]:40000", digest, export, true, true, false},
@@ -696,7 +696,7 @@ func TestHoldWrapper(t *testing.T) {
 				t.Errorf("looked %d times and held %d, want %d each", looks, f.holds, one(tc.held))
 			}
 			if f.wrapped != one(tc.wrapper) {
-				t.Errorf("counted %d for Calibre-Web, want %d", f.wrapped, one(tc.wrapper))
+				t.Errorf("told %d as the wrapper's, want %d", f.wrapped, one(tc.wrapper))
 			}
 			if f.waits != one(tc.waits) {
 				t.Errorf("waited out a restart %d times, want %d", f.waits, one(tc.waits))
@@ -708,37 +708,105 @@ func TestHoldWrapper(t *testing.T) {
 	}
 }
 
-// countingReloader counts calibre-server's restarts, and reconnects
-// Calibre-Web at once.
-type countingReloader struct{ restarts atomic.Int32 }
+// countingReloader counts calibre-server's restarts, and tells of each on
+// restarted; it reconnects Calibre-Web at once.
+type countingReloader struct {
+	restarts  atomic.Int32
+	restarted chan struct{}
+}
 
 func (*countingReloader) ReconnectCalibreWeb(context.Context) error { return nil }
 
 func (r *countingReloader) RestartContentServer(context.Context) error {
 	r.restarts.Add(1)
+	r.restarted <- struct{}{}
 	return nil
 }
 
-// TestHoldExportOnly runs 8080's hooks against a Coordinator on the real
-// clock, with a Quiet of 300 ms: while a restart is due after a change in
-// Calibre-Web, the wrapper's show_metadata goes on at once and brings no
-// restart; its export is held, restarts calibre-server at once, and goes
-// on once calibre-server takes connections. A second export, right after
-// that restart's start, brings the next restart only Quiet after it.
+// manualClock is a Clock that moves only when Advance moves it, and tells
+// on armed of the time each timer set falls due.
+type manualClock struct {
+	mu     sync.Mutex
+	now    time.Time
+	timers []*manualTimer
+	armed  chan time.Time
+}
+
+type manualTimer struct {
+	c       *manualClock
+	at      time.Time
+	f       func()
+	stopped bool
+}
+
+func (c *manualClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *manualClock) AfterFunc(d time.Duration, f func()) reload.Timer {
+	c.mu.Lock()
+	t := &manualTimer{c: c, at: c.now.Add(d), f: f}
+	c.timers = append(c.timers, t)
+	c.mu.Unlock()
+	c.armed <- t.at
+	return t
+}
+
+func (t *manualTimer) Stop() bool {
+	t.c.mu.Lock()
+	defer t.c.mu.Unlock()
+	was := !t.stopped
+	t.stopped = true
+	return was
+}
+
+// Advance moves the clock d on, and runs each timer that falls due, in the
+// caller's goroutine, without the clock's lock.
+func (c *manualClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	var due []func()
+	kept := c.timers[:0]
+	for _, t := range c.timers {
+		switch {
+		case t.stopped:
+		case !t.at.After(c.now):
+			t.stopped = true
+			due = append(due, t.f)
+		default:
+			kept = append(kept, t)
+		}
+	}
+	c.timers = kept
+	c.mu.Unlock()
+	for _, f := range due {
+		f()
+	}
+}
+
+// TestHoldExportOnly runs 8080's hooks against a Coordinator on a clock
+// the test moves. While a restart is due after a change in Calibre-Web,
+// the wrapper's show_metadata goes on at once and brings no restart; its
+// export is held, restarts calibre-server at once, and goes on once
+// calibre-server takes connections. A second change and export, 1 s after
+// that restart's start, bring the next restart only Quiet after the start.
 func TestHoldExportOnly(t *testing.T) {
 	t.Parallel()
-	opts := reload.Options{Window: time.Second, Quiet: 300 * time.Millisecond, Cap: time.Minute, RetryAfter: time.Second}
-	rl := &countingReloader{}
-	c := reload.New(reload.SystemClock(), rl, opts)
+	opts := reload.Options{Window: 10 * time.Second, Quiet: 5 * time.Second, Cap: 10 * time.Minute, RetryAfter: 10 * time.Second}
+	clk := &manualClock{now: time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC), armed: make(chan time.Time, 64)}
+	rl := &countingReloader{restarted: make(chan struct{}, 8)}
+	c := reload.New(clk, rl, opts)
 	t.Cleanup(c.Stop)
 	for _, app := range []reload.App{reload.ContentServer, reload.CalibreWeb} {
 		c.Accepting(app, c.Started(app))
 	}
-	time.Sleep(opts.Quiet + 50*time.Millisecond) // past the pacing of calibre-server's start
+	clk.Advance(time.Minute) // past the pacing of calibre-server's start
 	h := hooks(c, reload.ContentServer, func() {}, io.Discard)
 	edit := func() {
 		done := c.RequestStarted(reload.CalibreWeb, http.MethodPost, "/admin/book/1")
-		c.DBChanged(time.Now())
+		c.DBChanged(clk.Now())
 		done(http.StatusOK)
 	}
 	hold := func(path string) <-chan error {
@@ -749,47 +817,87 @@ func TestHoldExportOnly(t *testing.T) {
 		go func() { errc <- h.Hold(r) }()
 		return errc
 	}
-	within := func(errc <-chan error, d time.Duration) bool {
-		select {
-		case err := <-errc:
-			if err != nil {
-				t.Errorf("Hold: %v", err)
-			}
-			return true
-		case <-time.After(d):
-			return false
-		}
+	// Only a failing test waits this long
+	bound := func() <-chan time.Time { return time.After(30 * time.Second) }
+	restart := func() {
+		t.Helper()
+		c.Accepting(reload.ContentServer, c.Started(reload.ContentServer))
 	}
 
 	edit()
-	if !within(hold("/cdb/cmd/show_metadata/0"), 100*time.Millisecond) || rl.restarts.Load() != 0 {
-		t.Fatalf("show_metadata, with a restart due: held, or %d restarts; want at once, none", rl.restarts.Load())
+	select {
+	case err := <-hold("/cdb/cmd/show_metadata/0"):
+		if err != nil {
+			t.Fatalf("show_metadata: Hold = %v", err)
+		}
+	case <-rl.restarted:
+		t.Fatal("show_metadata, with a restart due, was held, and restarted calibre-server")
+	case <-bound():
+		t.Fatal("show_metadata, with a restart due, was held")
 	}
+	if got := rl.restarts.Load(); got != 0 {
+		t.Fatalf("show_metadata brought %d restarts, want none", got)
+	}
+
 	exported := hold("/cdb/cmd/export/0")
-	if within(exported, 100*time.Millisecond) {
-		t.Fatal("the export, with a restart due, went on before the restart")
+	select {
+	case <-rl.restarted:
+	case err := <-exported:
+		t.Fatalf("the export, with a restart due, went on before the restart: %v", err)
+	case <-bound():
+		t.Fatal("the export brought no restart")
 	}
-	if got := rl.restarts.Load(); got != 1 {
-		t.Fatalf("the export brought %d restarts, want 1 at once", got)
-	}
-	c.Accepting(reload.ContentServer, c.Started(reload.ContentServer))
-	if !within(exported, time.Second) {
+	restart()
+	select {
+	case err := <-exported:
+		if err != nil {
+			t.Fatalf("the export: Hold = %v", err)
+		}
+	case <-bound():
 		t.Fatal("the export was not let go once calibre-server took connections")
 	}
 
+	clk.Advance(time.Second)
+	paced := clk.Now().Add(opts.Quiet - time.Second) // Quiet after the restart's start
+	for drained := false; !drained; {
+		select {
+		case <-clk.armed: // the timers set before
+		default:
+			drained = true
+		}
+	}
 	edit()
 	again := hold("/cdb/cmd/export/0")
-	if within(again, opts.Quiet/2) || rl.restarts.Load() != 1 {
-		t.Fatalf("an export right after the restart's start: went on, or %d restarts; want held, 1", rl.restarts.Load())
+	for armed := false; !armed; {
+		select {
+		case at := <-clk.armed:
+			armed = at.Equal(paced)
+		case <-rl.restarted:
+			t.Fatal("an export 1 s after the restart's start restarted calibre-server at once")
+		case err := <-again:
+			t.Fatalf("an export 1 s after the restart's start went on before its restart: %v", err)
+		case <-bound():
+			t.Fatal("an export 1 s after the restart's start set no timer for Quiet after the start")
+		}
 	}
-	if within(again, opts.Quiet) {
-		t.Fatal("the second export went on before its restart")
+	if got := rl.restarts.Load(); got != 1 {
+		t.Fatalf("an export 1 s after the restart's start: %d restarts, want still 1", got)
 	}
-	if got := rl.restarts.Load(); got != 2 {
-		t.Fatalf("Quiet after the restart's start: %d restarts, want 2", got)
+	clk.Advance(opts.Quiet - time.Second)
+	select {
+	case <-rl.restarted:
+	case err := <-again:
+		t.Fatalf("the second export went on before its restart: %v", err)
+	case <-bound():
+		t.Fatal("Quiet after the restart's start, no second restart came")
 	}
-	c.Accepting(reload.ContentServer, c.Started(reload.ContentServer))
-	if !within(again, time.Second) {
+	restart()
+	select {
+	case err := <-again:
+		if err != nil {
+			t.Fatalf("the second export: Hold = %v", err)
+		}
+	case <-bound():
 		t.Fatal("the second export was not let go")
 	}
 }
