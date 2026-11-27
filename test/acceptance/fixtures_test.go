@@ -701,13 +701,25 @@ func waitLog(ctx context.Context, c *harness.Container, re *regexp.Regexp, withi
 	return m, err
 }
 
-// stop stops c as a user does, with <engine> stop -t 10, and returns how
-// long the stop took, and the container's exit status.
+// stop stops c as a user does, with <engine> stop -t 10, and returns the
+// container's exit status, and how long PID 1 took to exit: from just
+// before the stop command to the time the engine records for PID 1's exit.
+//
+// That is not how long the stop command takes. After PID 1 has exited,
+// the engine still unmounts the container's files and removes its
+// network, and only then does the command return. With many containers
+// starting and stopping at once, as in this suite, that work alone took up
+// to 13 seconds on Podman and 5 on Docker, while PID 1 had exited in under
+// a second. It is the engine's time, not the image's, so it does not
+// count. stop logs how long the command took all the same.
+//
+// The stop's start is read from this host's clock and the exit from the
+// engine's, which is the same clock when the engine runs on this host.
 func stop(tb testing.TB, e harness.Engine, c *harness.Container) (took time.Duration, code int) {
 	tb.Helper()
 	start := time.Now()
 	out, err := exec.CommandContext(tb.Context(), e.Name(), "stop", "-t", "10", c.ID).CombinedOutput() //nolint:gosec // G204: the engine and the container are the harness's own
-	took = time.Since(start)
+	command := time.Since(start)
 	if err != nil {
 		tb.Fatalf("%s stop %s: %v: %s", e.Name(), c, err, out)
 	}
@@ -715,7 +727,30 @@ func stop(tb testing.TB, e harness.Engine, c *harness.Container) (took time.Dura
 	if err != nil {
 		tb.Fatal(err)
 	}
+	exited, err := exitedAt(tb.Context(), e, c)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	took = exited.Sub(start)
+	tb.Logf("%s stop %s: PID 1 exited %s after the stop began; the command took %s", e.Name(), c, took, command)
 	return took, code
+}
+
+// exitedAt returns the time the engine records for the exit of c's PID 1,
+// which must come after the time it records for its start.
+func exitedAt(ctx context.Context, e harness.Engine, c *harness.Container) (time.Time, error) {
+	out, err := exec.CommandContext(ctx, e.Name(), "inspect", "--format", "{{json .State}}", c.ID).Output() //nolint:gosec // G204: the engine and the container are the harness's own
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%s inspect %s: %w", e.Name(), c, err)
+	}
+	var state struct{ StartedAt, FinishedAt time.Time }
+	if err := json.Unmarshal(out, &state); err != nil {
+		return time.Time{}, fmt.Errorf("reading the state of %s: %w", c, err)
+	}
+	if !state.FinishedAt.After(state.StartedAt) {
+		return time.Time{}, fmt.Errorf("%s records no exit for %s after its start: started %s, finished %s", e.Name(), c, state.StartedAt, state.FinishedAt)
+	}
+	return state.FinishedAt, nil
 }
 
 // md5Hex is s's MD5 sum, in hex.

@@ -158,7 +158,9 @@ func TestCalibreWebButtons(t *testing.T) {
 }
 
 // TestStop stops a serving container as a user does, with <engine> stop
-// -t 10: PID 1 stops both apps within its grace, and exits 0.
+// -t 10: PID 1 stops both apps within its grace, and exits 0, under 8 s
+// after the stop began. The engine's own cleanup after PID 1 has exited
+// does not count (see stop).
 func TestStop(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
@@ -168,7 +170,7 @@ func TestStop(t *testing.T) {
 	took, code := stop(tb, e, s.C)
 	checks := harness.NewChecks(tb)
 	harness.Equal(checks, "the container exits 0", 0, code)
-	checks.True("the stop takes under "+stopWithin.String(), took < stopWithin, took.String())
+	checks.True("PID 1 exits under "+stopWithin.String()+" after the stop began", took < stopWithin, took.String())
 }
 
 // serveLibrary serves the image on the fixture library, owned by uid
