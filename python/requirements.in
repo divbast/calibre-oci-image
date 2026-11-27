@@ -1,0 +1,2 @@
+-r https://raw.githubusercontent.com/janeczku/calibre-web/${CALIBRE_WEB_COMMIT}/requirements.txt
+-r https://raw.githubusercontent.com/janeczku/calibre-web/${CALIBRE_WEB_COMMIT}/optional-requirements.txt

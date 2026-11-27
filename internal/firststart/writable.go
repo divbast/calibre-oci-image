@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee>
+
+package firststart
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"syscall"
+)
+
+// Writable returns nil when the running user can write dir, and each of
+// the files named that dir holds, as Calibre and Calibre-Web will write
+// them: it creates and removes a temporary file in dir, and opens each
+// file for appending, writing nothing. A file that is not there yet is no
+// error. Otherwise it returns one error naming the directory or the file
+// and saying how to give it to the user, where Calibre or Calibre-Web
+// would stop later with a traceback.
+func Writable(dir string, files ...string) error {
+	tmp, err := os.CreateTemp(dir, ".writable.*")
+	if err != nil {
+		return cannotWrite(dir, "", err)
+	}
+	if cerr := errors.Join(tmp.Close(), os.Remove(tmp.Name())); cerr != nil {
+		return cerr
+	}
+	for _, name := range files {
+		path := filepath.Join(dir, name)
+		f, ferr := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0) //nolint:gosec // G304: a file the image names, in a directory it names
+		switch {
+		case errors.Is(ferr, fs.ErrNotExist):
+			continue
+		case ferr != nil:
+			return cannotWrite(path, dir, ferr)
+		}
+		if cerr := f.Close(); cerr != nil {
+			return cerr
+		}
+	}
+	return nil
+}
+
+// cannotWrite is the error for path, which the running user cannot write,
+// as err says. dir is the directory that holds path, or "" when path is a
+// directory itself. On a read-only file system, which a mount with ro is,
+// and the image's own root where nothing is mounted, no owner can write,
+// so it says to mount it writable. Otherwise it says how to give the
+// directory to the user.
+func cannotWrite(path, dir string, err error) error {
+	if errors.Is(err, syscall.EROFS) {
+		fix := "mount a writable volume or folder there, not a read-only one"
+		if dir != "" {
+			fix = "mount it writable, not read-only"
+		}
+		return fmt.Errorf("Calibre and Calibre-Web cannot write %s: it is on a read-only file system: %s: %w", path, fix, err) //nolint:staticcheck // ST1005: the sentence starts with the apps' names
+	}
+	what := "it"
+	if dir != "" {
+		what = dir
+	}
+	return fmt.Errorf("Calibre and Calibre-Web cannot write %s: %s: %w", path, GiveHint(what), err) //nolint:staticcheck // ST1005: the sentence starts with the apps' names
+}
+
+// GiveHint says how to give what, a directory, to the running user: the
+// end of a line that says the user cannot write it.
+func GiveHint(what string) string {
+	uid := os.Getuid()
+	return fmt.Sprintf("give %s, and everything in it, to uid %d, the user the image runs Calibre and Calibre-Web as, for example with chown -R %d:%d on the host's directory", what, uid, uid, os.Getgid())
+}
+
+// EnsureDir makes dir, mode 0700, when it is not there, and leaves one
+// that is as it is. Then it checks that the running user can write it, as
+// Writable does.
+func EnsureDir(dir string) error {
+	err := os.Mkdir(dir, 0o700)
+	if errors.Is(err, fs.ErrExist) {
+		fi, serr := os.Stat(dir)
+		switch {
+		case serr != nil:
+			return serr
+		case !fi.IsDir():
+			return fmt.Errorf("%s is not a directory", dir)
+		}
+		err = nil
+	}
+	if err != nil {
+		return fmt.Errorf("could not make a directory: %w", err)
+	}
+	return Writable(dir)
+}

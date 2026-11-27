@@ -1,0 +1,479 @@
+# upstream leaves it unpinned: APScheduler>=3.6.3,<3.12.0
+APScheduler==3.11.3
+
+# upstream leaves it unpinned: Babel>=1.3,<3.0
+Babel==2.19.0
+
+# upstream leaves it unpinned: beautifulsoup4>=4.0.1,<4.16.0
+beautifulsoup4==4.15.0
+
+# upstream leaves it unpinned: certifi>=2026.10.18,<2026.11.20
+certifi==2026.10.23
+
+# upstream leaves it unpinned: chardet>=3.0.0,<7.8.0
+chardet==7.7.0
+
+# upstream leaves it unpinned: comicapi>=3.2.0,<3.3.0
+comicapi==3.2.0
+
+# upstream leaves it unpinned: cryptography>=50.0.0,<51.0.0
+cryptography==50.0.2
+
+# upstream leaves it unpinned: faust-cchardet>=2.1.18,<3.3.0
+faust-cchardet==3.2.0
+
+# upstream leaves it unpinned: Flask>=1.0.2,<3.2.0
+Flask==3.1.3
+
+# upstream leaves it unpinned: Flask-Babel>=3.0.0,<4.1.0
+Flask-Babel==4.0.0
+
+# upstream leaves it unpinned: Flask-Dance>=2.0.0,<7.2.0
+Flask-Dance==7.1.0
+
+# upstream leaves it unpinned: flask-httpAuth>=4.4.0,<5.0.0
+flask-httpAuth==4.8.1
+
+# upstream leaves it unpinned: Flask-Limiter>=2.3.0,<4.2.0
+Flask-Limiter==4.1.1
+
+# upstream leaves it unpinned: Flask-Principal>=0.3.2,<0.5.1
+Flask-Principal==0.4.0
+
+# upstream leaves it unpinned: Flask-SimpleLDAP>=1.4.0,<2.2.0
+Flask-SimpleLDAP==2.1.0
+
+# upstream leaves it unpinned: Flask-Themes2>=1.0.1,<2.1.0
+Flask-Themes2==2.0.0
+
+# upstream leaves it unpinned: flask-wtf>=0.14.2,<1.4.0
+flask-wtf==1.3.0
+
+# upstream leaves it unpinned: gevent>20.6.0,<26.9.1
+gevent==26.9.0
+
+# upstream leaves it unpinned: goodreads>=0.3.2,<0.4.0
+goodreads==0.3.2
+
+# upstream leaves it unpinned: google-api-python-client>=2.73.00,<2.203.0
+google-api-python-client==2.202.0
+
+# upstream leaves it unpinned: google-auth-oauthlib>=1.0.0,<1.6.0
+google-auth-oauthlib==1.5.0
+
+# upstream leaves it unpinned: greenlet>=0.4.17,<3.6.0
+greenlet==3.5.6
+
+# upstream leaves it unpinned: html2text>=2020.1.16,<2025.4.16
+html2text==2025.4.15
+
+# upstream leaves it unpinned: httplib2>=0.9.2,<0.33.0
+httplib2==0.32.1
+
+# upstream leaves it unpinned: jsonschema>=3.2.0,<4.30.0
+jsonschema==4.26.0
+
+# upstream leaves it unpinned: lxml>=4.9.1,<6.2.0
+lxml==6.1.3
+
+# upstream leaves it unpinned: markdown2>=2.0.0,<2.6.0
+markdown2==2.5.5
+
+# upstream leaves it unpinned: mutagen>=1.40.0,<1.50.0
+mutagen==1.48.1
+
+# upstream leaves it unpinned: natsort>=2.2.0,<8.5.0
+natsort==8.4.0
+
+# upstream leaves it unpinned: netifaces-plus>=0.12.0,<0.13.0
+netifaces-plus==0.12.5
+
+# upstream leaves it unpinned: nh3>=0.3.0,<0.4.0
+nh3==0.3.8
+
+# leaves out: Google Drive support is not in the image, and this is the sign-in package only it uses, which nobody has maintained since 2018
+oauth2client
+
+# upstream leaves it unpinned: py7zr>=1.1.4,<1.2.0
+py7zr==1.1.4
+
+# upstream leaves it unpinned: pyasn1>=0.1.9,<0.7.0
+pyasn1==0.6.5
+
+# upstream leaves it unpinned: pyasn1-modules>=0.0.8,<0.7.0
+pyasn1-modules==0.4.2
+
+# upstream leaves it unpinned: pycountry>=20.0.0,<27.0.0
+pycountry==22.3.5
+
+# leaves out: Google Drive support is not in the image, because its library requires an unmaintained sign-in package and older cryptography than Calibre-Web itself
+PyDrive2
+
+# upstream leaves it unpinned: PyPDF>=6.21.4,<7.2.0
+PyPDF==7.1.1
+
+# upstream leaves it unpinned: python-dateutil>=2.1,<4.1.0
+python-dateutil==4.0.0
+
+# upstream leaves it unpinned: python-ldap>=3.0.0,<3.5.0
+python-ldap==3.4.8
+
+# upstream leaves it unpinned: python-Levenshtein>=0.12.0,<0.28.0
+python-Levenshtein==0.27.5
+
+# upstream leaves it unpinned: python-magic>=0.4.27,<0.5.0
+python-magic==0.4.27
+
+# upstream leaves it unpinned: pytz>=2016.10
+pytz==2026.6
+
+# upstream leaves it unpinned: PyYAML>=3.12,<6.1
+PyYAML==6.0.4
+
+# upstream leaves it unpinned: rarfile>=3.2,<5.0
+rarfile==4.5
+
+# upstream leaves it unpinned: regex>=2022.3.2,<2026.11.20
+regex==2026.11.19
+
+# upstream leaves it unpinned: requests>=2.32.0,<2.35.0
+requests==2.34.2
+
+# upstream leaves it unpinned: rsa>=3.4.2,<4.10.0
+rsa==4.9.1
+
+# upstream leaves it unpinned: scholarly>=1.2.0,<1.8
+scholarly==1.7.11
+
+# upstream leaves it unpinned: SQLAlchemy>=1.3.0,<2.2.0
+SQLAlchemy==2.1.9
+
+# upstream leaves it unpinned: SQLAlchemy-Utils>=0.33.5,<0.44.0
+SQLAlchemy-Utils==0.43.0
+
+# upstream leaves it unpinned: tornado>=6.6.1,<6.7
+tornado==6.6.1
+
+# upstream leaves it unpinned: unidecode>=0.04.19,<1.5.0
+unidecode==1.4.0
+
+# upstream leaves it unpinned: uritemplate>=3.0.0,<4.3.0
+uritemplate==4.2.0
+
+# upstream leaves it unpinned: urllib3>=2.8.0,<3.0
+urllib3==2.8.0
+
+# upstream leaves it unpinned: Wand>=0.4.4,<0.8.0
+Wand==0.7.3
+
+# needed by sphinx 9.2.0, which requires it, though upstream's list leaves it out
+alabaster==1.0.0
+
+# needed by httpx 0.28.1, which requires it, though upstream's list leaves it out
+anyio==4.16.0
+
+# needed by scholarly 1.7.11, which requires it, though upstream's list leaves it out
+arrow==1.4.0
+
+# needed by jsonschema 4.26.0, outcome 1.3.0.post0, referencing 0.37.0, trio 0.35.0, which require it, though upstream's list leaves it out
+attrs==26.1.0
+
+# needed by scholarly 1.7.11, which requires it, though upstream's list leaves it out
+bibtexparser==2.1.0
+
+# needed by flask 3.1.3, flask-principal 0.4.0, which require it, though upstream's list leaves it out
+blinker==1.9.0
+
+# needed by py7zr 1.1.4, which requires it, though upstream's list leaves it out
+brotli==1.2.1
+
+# needed by cryptography 50.0.2, which requires it, though upstream's list leaves it out
+cffi==2.1.1
+
+# needed by requests 2.34.2, which requires it, though upstream's list leaves it out
+charset-normalizer==3.5.3
+
+# needed by flask 3.1.3, which requires it, though upstream's list leaves it out
+click==8.5.1
+
+# needed by limits 5.8.0, scholarly 1.7.11, which require it, though upstream's list leaves it out
+deprecated==3.0.1
+
+# needed by sphinx 9.2.0, sphinx-rtd-theme 3.1.0, which require it, though upstream's list leaves it out
+docutils==0.22.4
+
+# needed by scholarly 1.7.11, which requires it, though upstream's list leaves it out
+fake-useragent==2.2.0
+
+# needed by scholarly 1.7.11, which requires it, though upstream's list leaves it out
+free-proxy==1.3.1
+
+# needed by google-api-python-client 2.202.0, which requires it, though upstream's list leaves it out
+google-api-core==2.44.0
+
+# needed by google-api-core 2.44.0, google-api-python-client 2.202.0, google-auth-httplib2 0.4.4, google-auth-oauthlib 1.5.0, which require it, though upstream's list leaves it out
+google-auth==2.63.1
+
+# needed by google-api-python-client 2.202.0, which requires it, though upstream's list leaves it out
+google-auth-httplib2==0.4.4
+
+# needed by google-api-core 2.44.0, which requires it, though upstream's list leaves it out
+googleapis-common-protos==1.76.0
+
+# needed by httpcore 1.0.9, wsproto 1.3.2, which require it, though upstream's list leaves it out
+h11==0.16.0
+
+# needed by httpx 0.28.1, which requires it, though upstream's list leaves it out
+httpcore==1.0.9
+
+# needed by scholarly 1.7.11, which requires it, though upstream's list leaves it out
+httpx==0.28.1
+
+# needed by anyio 4.16.0, httpx 0.28.1, requests 2.34.2, trio 0.35.0, which require it, though upstream's list leaves it out
+idna==3.20
+
+# needed by sphinx 9.2.0, which requires it, though upstream's list leaves it out
+imagesize==2.0.1
+
+# needed by comicapi 3.2.0, which requires it, though upstream's list leaves it out
+importlib-metadata==9.0.0
+
+# needed by py7zr 1.1.4, which requires it, though upstream's list leaves it out
+inflate64==1.0.4
+
+# needed by flask 3.1.3, flask-wtf 1.3.0, which require it, though upstream's list leaves it out
+itsdangerous==2.2.0
+
+# needed by flask 3.1.3, flask-babel 4.0.0, sphinx 9.2.0, which require it, though upstream's list leaves it out
+jinja2==3.1.6
+
+# needed by jsonschema 4.26.0, which requires it, though upstream's list leaves it out
+jsonschema-specifications==2025.9.1
+
+# needed by python-levenshtein 0.27.5, which requires it, though upstream's list leaves it out
+levenshtein==0.27.5
+
+# needed by flask-limiter 4.1.1, which requires it, though upstream's list leaves it out
+limits==5.8.0
+
+# needed by flask 3.1.3, jinja2 3.1.6, werkzeug 3.1.9, wtforms 3.3.2, which require it, though upstream's list leaves it out
+markupsafe==3.0.4
+
+# needed by py7zr 1.1.4, which requires it, though upstream's list leaves it out
+multivolumefile==0.2.3
+
+# needed by goodreads 0.3.2, which requires it, though upstream's list leaves it out
+nose==1.3.7
+
+# needed by flask-dance 7.1.0, requests-oauthlib 2.0.0, which require it, though upstream's list leaves it out
+oauthlib==4.0.1
+
+# needed by google-api-core 2.44.0, which requires it, though upstream's list leaves it out
+opentelemetry-api==1.45.2
+
+# needed by flask-limiter 4.1.1, which requires it, though upstream's list leaves it out
+ordered-set==4.1.0
+
+# needed by trio 0.35.0, trio-websocket 0.12.2, which require it, though upstream's list leaves it out
+outcome==1.3.0.post0
+
+# needed by limits 5.8.0, sphinx 9.2.0, which require it, though upstream's list leaves it out
+packaging==26.4
+
+# needed by comicapi 3.2.0, which requires it, though upstream's list leaves it out
+pillow==13.0.0
+
+# needed by google-api-core 2.44.0, which requires it, though upstream's list leaves it out
+proto-plus==1.29.0
+
+# needed by google-api-core 2.44.0, googleapis-common-protos 1.76.0, proto-plus 1.29.0, which require it, though upstream's list leaves it out
+protobuf==7.36.2
+
+# needed by py7zr 1.1.4, which requires it, though upstream's list leaves it out
+psutil==7.2.2
+
+# needed by py7zr 1.1.4, which requires it, though upstream's list leaves it out
+pybcj==1.0.8
+
+# needed by cffi 2.1.1, which requires it, though upstream's list leaves it out
+pycparser==3.12
+
+# needed by py7zr 1.1.4, which requires it, though upstream's list leaves it out
+pycryptodomex==3.24.2
+
+# needed by sphinx 9.2.0, which requires it, though upstream's list leaves it out
+pygments==2.21.0
+
+# needed by bibtexparser 2.1.0, which requires it, though upstream's list leaves it out
+pylatexenc==2.11
+
+# needed by httplib2 0.32.1, which requires it, though upstream's list leaves it out
+pyparsing==3.3.3
+
+# needed by py7zr 1.1.4, which requires it, though upstream's list leaves it out
+pyppmd==1.3.1
+
+# needed by requests 2.34.2, urllib3 2.8.0, which require it, though upstream's list leaves it out
+pysocks==1.7.1
+
+# needed by scholarly 1.7.11, which requires it, though upstream's list leaves it out
+python-dotenv==1.2.4
+
+# needed by comicapi 3.2.0, levenshtein 0.27.5, which require it, though upstream's list leaves it out
+rapidfuzz==3.14.6
+
+# needed by goodreads 0.3.2, which requires it, though upstream's list leaves it out
+rauth==0.7.3
+
+# needed by jsonschema 4.26.0, jsonschema-specifications 2025.9.1, which require it, though upstream's list leaves it out
+referencing==0.37.0
+
+# needed by flask-dance 7.1.0, google-auth-oauthlib 1.5.0, which require it, though upstream's list leaves it out
+requests-oauthlib==2.0.0
+
+# needed by sphinx 9.2.0, which requires it, though upstream's list leaves it out
+roman-numerals==4.1.0
+
+# needed by jsonschema 4.26.0, referencing 0.37.0, which require it, though upstream's list leaves it out
+rpds-py==2026.9.1
+
+# needed by scholarly 1.7.11, which requires it, though upstream's list leaves it out
+selenium==4.54.0
+
+# needed by pycountry 22.3.5, which requires it, though upstream's list leaves it out
+setuptools==84.2.1
+
+# needed by trio 0.35.0, which requires it, though upstream's list leaves it out
+sniffio==1.3.1
+
+# needed by sphinx 9.2.0, which requires it, though upstream's list leaves it out
+snowballstemmer==3.1.1
+
+# needed by trio 0.35.0, which requires it, though upstream's list leaves it out
+sortedcontainers==2.4.0
+
+# needed by beautifulsoup4 4.15.0, which requires it, though upstream's list leaves it out
+soupsieve==4.1.3
+
+# needed by sphinx-rtd-theme 3.1.0, sphinxcontrib-jquery 4.1, which require it, though upstream's list leaves it out
+sphinx==9.2.0
+
+# needed by scholarly 1.7.11, which requires it, though upstream's list leaves it out
+sphinx-rtd-theme==3.1.0
+
+# needed by sphinx 9.2.0, which requires it, though upstream's list leaves it out
+sphinxcontrib-applehelp==2.0.0
+
+# needed by sphinx 9.2.0, which requires it, though upstream's list leaves it out
+sphinxcontrib-devhelp==2.0.0
+
+# needed by sphinx 9.2.0, which requires it, though upstream's list leaves it out
+sphinxcontrib-htmlhelp==2.1.0
+
+# needed by sphinx-rtd-theme 3.1.0, which requires it, though upstream's list leaves it out
+sphinxcontrib-jquery==4.1
+
+# needed by sphinx 9.2.0, which requires it, though upstream's list leaves it out
+sphinxcontrib-jsmath==2.0.0
+
+# needed by sphinx 9.2.0, which requires it, though upstream's list leaves it out
+sphinxcontrib-qthelp==2.0.0
+
+# needed by sphinx 9.2.0, which requires it, though upstream's list leaves it out
+sphinxcontrib-serializinghtml==2.0.0
+
+# needed by comicapi 3.2.0, which requires it, though upstream's list leaves it out
+text2digits==0.1.2
+
+# needed by py7zr 1.1.4, which requires it, though upstream's list leaves it out
+texttable==1.7.3
+
+# needed by selenium 4.54.0, trio-websocket 0.12.2, which require it, though upstream's list leaves it out
+trio==0.35.0
+
+# needed by selenium 4.54.0, which requires it, though upstream's list leaves it out
+trio-websocket==0.12.2
+
+# needed by beautifulsoup4 4.15.0, flask-limiter 4.1.1, limits 5.8.0, opentelemetry-api 1.45.2, scholarly 1.7.11, selenium 4.54.0, sqlalchemy 2.1.9, which require it, though upstream's list leaves it out
+typing-extensions==4.16.0
+
+# needed by arrow 1.4.0, python-dateutil 4.0.0, which require it, though upstream's list leaves it out
+tzdata==2026.6
+
+# needed by apscheduler 3.11.3, which requires it, though upstream's list leaves it out
+tzlocal==5.4.5
+
+# needed by flask-dance 7.1.0, which requires it, though upstream's list leaves it out
+urlobject==3.0.0
+
+# needed by selenium 4.54.0, which requires it, though upstream's list leaves it out
+websocket-client==1.9.2
+
+# needed by flask 3.1.3, flask-dance 7.1.0, which require it, though upstream's list leaves it out
+werkzeug==3.1.9
+
+# needed by comicapi 3.2.0, which requires it, though upstream's list leaves it out
+wordninja==2.0.0
+
+# needed by deprecated 3.0.1, which requires it, though upstream's list leaves it out
+wrapt==2.5.2
+
+# needed by trio-websocket 0.12.2, which requires it, though upstream's list leaves it out
+wsproto==1.3.2
+
+# needed by flask-wtf 1.3.0, which requires it, though upstream's list leaves it out
+wtforms==3.3.2
+
+# needed by goodreads 0.3.2, which requires it, though upstream's list leaves it out
+xmltodict==1.0.4
+
+# needed by importlib-metadata 9.0.0, which requires it, though upstream's list leaves it out
+zipp==4.1.2
+
+# needed by gevent 26.9.0, which requires it, though upstream's list leaves it out
+zope-event==6.2
+
+# needed by gevent 26.9.0, which requires it, though upstream's list leaves it out
+zope-interface==8.7
+
+# builds levenshtein, rapidfuzz from source
+cmake==4.4.5
+
+# builds faust-cchardet, gevent, lxml, pyyaml from source
+cython==3.2.9
+
+# builds cryptography, nh3, rpds-py from source
+maturin==1.16.0
+
+# builds faust-cchardet from source, for meson-python
+meson==1.12.1
+
+# builds faust-cchardet from source
+meson-python==0.22.1
+
+# builds faust-cchardet, levenshtein, rapidfuzz from source
+ninja==1.13.2
+
+# builds levenshtein, rapidfuzz from source, for scikit-build-core
+pathspec==1.1.1
+
+# builds brotli from source
+pkgconfig==1.6.0
+
+# builds pillow from source
+pybind11==3.1.0
+
+# builds faust-cchardet from source, for meson-python
+pyproject-metadata==0.12.1
+
+# builds levenshtein, rapidfuzz from source
+scikit-build-core==1.1.2
+
+# builds inflate64, pybcj, pyppmd from source
+setuptools-scm==10.3.4
+
+# builds inflate64, pybcj, pyppmd from source, for setuptools_scm
+vcs-versioning==2.6.0
+
+# builds pybcj, zope-interface from source
+wheel==0.48.0

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-License-Identifier: GPL-3.0-only
 // SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee>
 
 // Package acceptance runs the acceptance suite against the image IMAGE
@@ -6,11 +6,14 @@
 // Every container it starts runs under exactly the confinement the image's
 // contract claims, through divbast's harness, so no check can pass under a
 // looser one. With IMAGE unset there is nothing to test, and every test
-// skips.
+// skips. The tests named TestMeasure… measure what the image does, for its
+// documents, and run only when MEASURE is set.
 package acceptance
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"testing"
@@ -22,11 +25,24 @@ import (
 // sweepWithin bounds the sweep of what an earlier run left behind.
 const sweepWithin = 2 * time.Minute
 
+// measurements are the tests that run only when MEASURE is set: each takes
+// minutes, and records numbers rather than holding the image to them.
+const measurements = "^TestMeasure"
+
 // TestMain removes every container, network and volume a run that died
 // left behind, before any test starts its own, and the probe volumes this
 // run made once the tests are done. Without an image there is nothing to
-// sweep for, and no engine is asked.
+// sweep for, and no engine is asked. Unless MEASURE is set, it adds the
+// measurements to go test's -skip, so that a run does not show them as
+// skipped, which divbast-testcount fails.
 func TestMain(m *testing.M) {
+	flag.Parse()
+	if os.Getenv("MEASURE") == "" {
+		if err := skipMeasurements(); err != nil {
+			fmt.Fprintln(os.Stderr, "acceptance:", err)
+			os.Exit(1)
+		}
+	}
 	if os.Getenv("IMAGE") == "" {
 		os.Exit(m.Run())
 	}
@@ -40,6 +56,19 @@ func TestMain(m *testing.M) {
 		code = max(code, 1)
 	}
 	os.Exit(code)
+}
+
+// skipMeasurements adds the measurements to go test's -skip.
+func skipMeasurements() error {
+	f := flag.Lookup("test.skip")
+	if f == nil {
+		return errors.New("go test has no -skip, to leave the measurements out with")
+	}
+	skip := measurements
+	if v := f.Value.String(); v != "" {
+		skip = v + "|" + measurements
+	}
+	return f.Value.Set(skip)
 }
 
 // removeProbeVolumes is [harness.Engine.RemoveProbeVolumes] under the
