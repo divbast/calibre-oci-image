@@ -132,6 +132,10 @@ func TestChildren(t *testing.T) {
 		if (c.Before != nil) != before {
 			t.Errorf("%s has a Before: %t, want %t", c.Name, c.Before != nil, before)
 		}
+		// Only calibre-server loses a SIGTERM while it starts
+		if serves := c.Name == "calibre-server"; (c.Serves != nil) != serves {
+			t.Errorf("%s has a Serves: %t, want %t", c.Name, c.Serves != nil, serves)
+		}
 	}
 }
 

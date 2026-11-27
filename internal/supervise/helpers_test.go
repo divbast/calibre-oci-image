@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -81,6 +83,8 @@ func helperMain(mode string) int {
 		}
 		ready(f)
 		sleepForever()
+	case "late-serve":
+		return lateServeMain(f, code)
 	case "echo":
 		if _, err := io.Copy(os.Stdout, os.Stdin); err != nil {
 			return 2
@@ -140,6 +144,153 @@ func helperMain(mode string) int {
 		return 0
 	}
 	return 2
+}
+
+// lateServeMain is the late-serve child, which starts as calibre-server
+// 9.19.0 does: each SIGTERM it gets before it serves is lost. It serves
+// HTTP on the Unix socket HELPER_SOCK once the file HELPER_GO names
+// exists. A SIGTERM while it serves ends it: it still answers for
+// HELPER_ANSWER_MS after it, as a server that acted on a SIGTERM does
+// for a moment, then closes the socket, and exits HELPER_SLEEP_MS after
+// the SIGTERM. Each SIGTERM it gets adds a line to the file HELPER_TERMS
+// names.
+func lateServeMain(f *os.File, code int) int {
+	term := make(chan os.Signal, 4)
+	signal.Notify(term, syscall.SIGTERM)
+	ready(f)
+	goFile, sock, terms := os.Getenv("HELPER_GO"), os.Getenv("HELPER_SOCK"), os.Getenv("HELPER_TERMS")
+	answerMS, _ := strconv.Atoi(os.Getenv("HELPER_ANSWER_MS"))
+	sleepMS, _ := strconv.Atoi(os.Getenv("HELPER_SLEEP_MS"))
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	var srv *http.Server
+	var quiet, exit <-chan time.Time
+	for {
+		select {
+		case <-term:
+			if appendLine(terms) != nil {
+				return 2
+			}
+			if srv != nil && exit == nil {
+				quiet = time.After(time.Duration(answerMS) * time.Millisecond)
+				exit = time.After(time.Duration(sleepMS) * time.Millisecond)
+			}
+		case <-quiet:
+			quiet = nil
+			_ = srv.Close() // the socket goes with the listener
+		case <-exit:
+			return code
+		case <-tick.C:
+			if _, err := os.Stat(goFile); err != nil || srv != nil { //nolint:gosec // G703: the test's own file, named in the child's environment by the test
+				continue
+			}
+			ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", sock)
+			if err != nil {
+				return 2
+			}
+			srv = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+			}), ReadHeaderTimeout: time.Second}
+			go func() { _ = srv.Serve(ln) }()
+		}
+	}
+}
+
+// appendLine adds one line to the file at path.
+func appendLine(path string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // G304: a test's own file
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString("term\n"); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// lateEvery is how often the late-serve child's Serves looks, and so how
+// long after a SIGTERM its first look comes.
+const lateEvery = 250 * time.Millisecond
+
+// lateServe is a late-serve child's files, in a folder of the test's own.
+type lateServe struct {
+	goFile, sock, terms string
+	answerMS, sleepMS   int
+}
+
+// newLateServe is a late-serve child that serves at once when atOnce is
+// true, and otherwise once the test calls serve; that still answers for
+// answerMS after the SIGTERM that ends it; and that exits sleepMS after
+// that SIGTERM.
+func newLateServe(t *testing.T, atOnce bool, answerMS, sleepMS int) *lateServe {
+	t.Helper()
+	// A short folder: a Unix socket's path is short
+	dir, err := os.MkdirTemp("", "sv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	ls := &lateServe{goFile: dir + "/go", sock: dir + "/s", terms: dir + "/terms", answerMS: answerMS, sleepMS: sleepMS}
+	if atOnce {
+		if err := os.WriteFile(ls.goFile, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return ls
+}
+
+// child is the Child "a" that runs ls, with Answers on its socket, once
+// each lateEvery, as its Serves.
+func (ls *lateServe) child() Child {
+	client := &http.Client{Transport: &http.Transport{
+		DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", ls.sock)
+		},
+	}}
+	return Child{
+		Name: "a",
+		Env: []string{
+			"HELPER_GO=" + ls.goFile, "HELPER_SOCK=" + ls.sock, "HELPER_TERMS=" + ls.terms,
+			"HELPER_ANSWER_MS=" + strconv.Itoa(ls.answerMS), "HELPER_SLEEP_MS=" + strconv.Itoa(ls.sleepMS),
+		},
+		Serves: Answers(client, "http://late-serve/", lateEvery),
+	}
+}
+
+// serve has the child serve, and returns the time it was told to.
+func (ls *lateServe) serve(t *testing.T) time.Time {
+	t.Helper()
+	at := time.Now()
+	if err := os.WriteFile(ls.goFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return at
+}
+
+// termCount is how many SIGTERMs the child has got.
+func (ls *lateServe) termCount(t *testing.T) int {
+	t.Helper()
+	b, err := os.ReadFile(ls.terms)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Count(string(b), "\n")
+}
+
+// waitFile waits until path exists.
+func waitFile(t *testing.T, path string) {
+	t.Helper()
+	for end := time.Now().Add(waitFor); time.Now().Before(end); time.Sleep(5 * time.Millisecond) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+	}
+	t.Fatalf("%s never appeared", path)
 }
 
 // startLeaf starts a process in the helper's own group that ignores
@@ -221,7 +372,8 @@ func always(mode string) func(int) string {
 	return func(int) string { return mode }
 }
 
-func (h *helper) start(c Child) (*os.Process, error) {
+func (h *helper) start(child *Child) (*os.Process, error) {
+	c := *child // the supervisor's own Child is never changed
 	h.n++
 	n := h.n
 	if h.gate != nil {
@@ -233,7 +385,7 @@ func (h *helper) start(c Child) (*os.Process, error) {
 	}
 	c.Argv = helperArgv()
 	c.Env = helperEnv(h.mode(n), append(c.Env, "HELPER_READY=3")...)
-	p, err := startProcess(c, w)
+	p, err := startProcess(&c, w)
 	_ = w.Close()
 	if err != nil {
 		_ = r.Close()

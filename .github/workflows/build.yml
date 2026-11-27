@@ -89,12 +89,6 @@ jobs:
       version-arg: CALIBRE_VERSION
       extra-tag-arg: IMAGE_PAIR
       description: Security hardened Calibre and Calibre-Web OCI Image
-      # Decides against image, then pushes, attests and verifies in a
-      # registry the job starts for itself, so nothing reaches ghcr.io. An
-      # app made from this repository sets image to its own and removes
-      # this line, and divbast/ci v2 fails the job in any other repository
-      # that keeps it: README.md's "Making a new app", step 8.
-      rehearse: true
     # Everything app-publish.yml's job asks for, rehearsing or not: a called
     # job that asks for more than its caller grants fails.
     permissions:

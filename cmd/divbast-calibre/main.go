@@ -352,8 +352,12 @@ func newCoordinator(ctx context.Context, clk reload.Clock, r reload.Reloader) *r
 // children are the two apps, each with env as its whole environment, but
 // that calibre-server keeps its temporary files in its own folder in
 // /config, which is emptied before each of its starts, with what fails
-// written to logw.
+// written to logw. calibre-server's Serves asks its loopback port for any
+// answer, first watchEvery after a SIGTERM and then once each watchEvery:
+// calibre-server 9.19.0 loses a SIGTERM that comes while it starts, and
+// the supervisor sends it one more if it still answers after one.
 func children(l layout, env []string, logw io.Writer) []supervise.Child {
+	client := loopbackClient()
 	return []supervise.Child{
 		{
 			Name: reload.ContentServer.String(),
@@ -363,6 +367,7 @@ func children(l layout, env []string, logw io.Writer) []supervise.Child {
 			},
 			Env:    setEnv(env, "CALIBRE_TEMP_DIR", l.serverTmp()),
 			Before: func() error { return freshDir(l.serverTmp(), logw) },
+			Serves: supervise.Answers(client, "http://"+contentServerAddr+"/", watchEvery),
 		},
 		{
 			Name: reload.CalibreWeb.String(),
@@ -373,6 +378,16 @@ func children(l layout, env []string, logw io.Writer) []supervise.Child {
 			},
 			Env: env,
 		},
+	}
+}
+
+// loopbackClient is the client calibre-server's Serves asks its loopback
+// port with: no proxy from the environment, no redirect followed, and a
+// new connection each time, so none is left open in the app.
+func loopbackClient() *http.Client {
+	return &http.Client{
+		Transport:     &http.Transport{DisableKeepAlives: true},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
 
