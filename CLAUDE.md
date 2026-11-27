@@ -131,14 +131,16 @@ is a breaking change.
   gate opens after a restart: PID 1 opens it at its next 1 s look at
   calibre-server's port, and the probe asks that port directly. Both are
   accepted as they are
-- **Calibre-Web's own calibredb calls are held, not refused** (R39, R40).
-  On 8080, a request from a loopback peer, logged in by Digest as
+- **Calibre-Web's own calibredb calls are held, not refused** (R39, R40,
+  R41). On 8080, a request from a loopback peer, logged in by Digest as
   `calibre-web` (both signs, never one), is the wrapper's: PID 1 looks at
   `metadata.db` at once, then holds the request while a restart is to
   come or runs, and passes it on once the new calibre-server takes
-  connections. A restart to come then skips its 5 s of quiet, but still
-  waits until no other 8080 request is open. While a tracked conversion
-  runs, the request is not held, and one held is let go when a conversion
+  connections. A restart to come then skips its 5 s of quiet, but no
+  sooner than `Options.Quiet` (5 s) after calibre-server's latest start,
+  so bulk reads restart it at most once each 5 s; and it still waits
+  until no other 8080 request is open. While a tracked conversion runs,
+  the request is not held, and one held is let go when a conversion
   starts, so a held request never waits for a conversion. Without this a
   download right after a Calibre-Web edit answered 404 for 5.5 s, then
   came without its metadata, and a KEPUB conversion failed. Each such
@@ -148,11 +150,12 @@ is a breaking change.
   `calibredb` first, and its write would otherwise fall in calibre-server's
   own start after the restart the read brought on, and be lost (a Kobo's
   first sync of 20 EPUBs left the Content Server without the last
-  KEPUBs). So a first sync restarts calibre-server once a book: 20
-  restarts in 27 s, 0.21 s down each, and 83 of 186 reads through 8080
-  answered 503 meanwhile. The first, unauthenticated request of each
-  `calibredb` call carries neither login sign, so during a restart it
-  still gets 503
+  KEPUBs). A first sync of 20 EPUBs now takes 20 restarts, one each 5.1 s,
+  99 s in all, 0.21 s down each, and 87 of 471 reads through 8080 answered
+  503 meanwhile. During a restart, any other 8080 request from a loopback
+  peer waits for the new calibre-server too, bounded by its own context,
+  rather than getting 503 (R41): `calibredb`'s first request of each call
+  carries no login yet, and only the image's own tools come from loopback
 - **8080 answers a body past calibre-server's own limit itself**: a
   `Content-Length` over 524,288,000 bytes, calibre-server's 500 MB
   default `--max-request-body-size`, which the image keeps, gets 413 with
