@@ -307,7 +307,7 @@ func startApps(ctx context.Context, s *settings) int {
 	}
 	read.on.Store(true)
 
-	apps := reload.New(reload.SystemClock(), &reloader{sup: sup, client: &http.Client{}, reconnect: "http://" + calibreWebAddr + "/reconnect"}, reloadOptions)
+	apps := newCoordinator(ctx, reload.SystemClock(), &reloader{sup: sup, client: &http.Client{}, reconnect: "http://" + calibreWebAddr + "/reconnect"})
 	defer apps.Stop()
 	t := newTracker(ctx, statePath, apps, s.stderr)
 	if err := t.write(); err != nil {
@@ -336,6 +336,17 @@ func startApps(ctx context.Context, s *settings) int {
 		cancel()
 	}
 	return max(code, <-ran)
+}
+
+// newCoordinator returns the Coordinator that reloads the apps with r, on
+// clk, and stops once ctx ends. serve's context ends when a stop begins,
+// and the supervisor then gives the apps 8 s to end: a reload that fell
+// due in that time would ask a supervisor that is stopping, and log a
+// failure where there is none.
+func newCoordinator(ctx context.Context, clk reload.Clock, r reload.Reloader) *reload.Coordinator {
+	c := reload.New(clk, r, reloadOptions)
+	context.AfterFunc(ctx, c.Stop)
+	return c
 }
 
 // children are the two apps, each with env as its whole environment, but

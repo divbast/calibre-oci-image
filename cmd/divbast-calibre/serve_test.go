@@ -788,6 +788,58 @@ func (c *manualClock) Advance(d time.Duration) {
 	}
 }
 
+// stopped reports whether every timer the clock set has been stopped.
+func (c *manualClock) stopped() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, t := range c.timers {
+		if !t.stopped {
+			return false
+		}
+	}
+	return true
+}
+
+// TestCoordinatorStopsWithServe: once serve's context ends, as it does
+// when a stop begins, the Coordinator starts no reload. A restart that
+// fell due in the 8 s a stop gives the apps would otherwise ask the
+// supervisor, which is stopping them, and log that it failed.
+func TestCoordinatorStopsWithServe(t *testing.T) {
+	t.Parallel()
+	clk := &manualClock{now: time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC), armed: make(chan time.Time, 64)}
+	rl := &countingReloader{restarted: make(chan struct{}, 8)}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	c := newCoordinator(ctx, clk, rl)
+	t.Cleanup(c.Stop)
+	for _, app := range []reload.App{reload.ContentServer, reload.CalibreWeb} {
+		c.Accepting(app, c.Started(app))
+	}
+	clk.Advance(time.Minute)
+	done := c.RequestStarted(reload.CalibreWeb, http.MethodPost, "/admin/book/1")
+	c.DBChanged(clk.Now())
+	done(http.StatusOK)
+	if clk.stopped() {
+		t.Fatal("an edit in Calibre-Web set no timer for its restart")
+	}
+
+	cancel()
+	// The Coordinator stops on a goroutine of its own; only a failing test
+	// waits this long
+	for end := time.Now().Add(10 * time.Second); !clk.stopped() && time.Now().Before(end); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	clk.Advance(reloadOptions.Quiet)
+	select {
+	case <-rl.restarted:
+		t.Error("a restart started after serve's context ended")
+	case <-time.After(time.Second):
+	}
+	if deny, _, why := c.Gate(reload.ContentServer, http.MethodGet, "/ajax/books"); deny {
+		t.Errorf("a read through 8080 is refused after the stop: %q", why)
+	}
+}
+
 // TestHoldExportOnly runs 8080's hooks against a Coordinator on a clock
 // the test moves. While a restart is due after a change in Calibre-Web,
 // the wrapper's show_metadata goes on at once and brings no restart; its
