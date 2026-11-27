@@ -84,7 +84,13 @@ func TestWatch(t *testing.T) {
 	expect("a write to metadata.db", 1)
 	write(journal, os.O_WRONLY|os.O_APPEND, []byte("more"))
 	expect("an append to the journal", 1)
-	write(wal, os.O_WRONLY|os.O_CREATE|os.O_EXCL, []byte("wal"))
+	// Made whole under another name and renamed into place: made where it
+	// is, it would be seen once empty, and again once written, when a
+	// look falls between the two
+	write(wal+".new", os.O_WRONLY|os.O_CREATE|os.O_EXCL, []byte("wal"))
+	if err := root.Rename(wal+".new", wal); err != nil {
+		t.Fatal(err)
+	}
 	expect("a new WAL file", 1)
 	if err := root.Remove(journal); err != nil {
 		t.Fatal(err)
