@@ -137,6 +137,7 @@ type Coordinator struct {
 	restartFrom  int           // calibre-server's starts when the restart was called
 	reconnecting bool          // a reconnect is under way
 	hurry        bool          // a held request has the restart to come skip the quiet time
+	hurryAt      time.Time     // from when it may: Quiet after calibre-server's latest start
 	held         chan struct{} // closed when the held requests may go on; nil while none waits
 	timer        Timer
 	timerAt      time.Time
@@ -150,6 +151,7 @@ type appState struct {
 	wroteAt   time.Time // when the last of those ended
 	starting  bool      // started, and its port has not accepted since
 	starts    int       // how many times it was started
+	startedAt time.Time // when it was last started
 	loadedAt  time.Time // when its latest start, or reload, began
 	reloading bool      // a reconnect of Calibre-Web is under way
 	ownUntil  time.Time // when its own start, or reload, ends
@@ -207,8 +209,10 @@ func (c *Coordinator) Stop() {
 //
 // While a restart of calibre-server is to come and no conversion runs,
 // Hold has the restart go ahead without waiting for the library to go
-// Quiet: it still waits until no request to the Content Server is open,
-// which the held ones are not. While a restart is to come, or under way,
+// Quiet, but no sooner than Quiet after calibre-server's latest start, so
+// that a run of reads, each after a change, restarts it at most once each
+// Quiet. The restart still waits until no request to the Content Server is
+// open, which the held ones are not. While a restart is to come, or under way,
 // Hold returns once the new calibre-server takes connections. It returns
 // at once when no restart is to come or under way, and while a
 // conversion runs, since the restart then waits for the conversion, up to
@@ -224,7 +228,9 @@ func (c *Coordinator) Hold(ctx context.Context) error {
 		return nil
 	case c.restarting:
 	case c.want[ContentServer] && !c.converting(now):
-		c.hurry = true
+		if !c.hurry {
+			c.hurry, c.hurryAt = true, c.apps[ContentServer].startedAt.Add(c.o.Quiet)
+		}
 	default:
 		c.mu.Unlock()
 		return nil
@@ -403,6 +409,7 @@ func (c *Coordinator) Started(app App) (start int) {
 	a := &c.apps[app]
 	a.starting = true
 	a.starts++
+	a.startedAt = now
 	a.loadedAt = later(a.loadedAt, now)
 	c.want[app] = false
 	start = a.starts
@@ -553,7 +560,8 @@ func (c *Coordinator) step(now time.Time) (acts actions) {
 	if c.want[ContentServer] && !c.restarting {
 		capped := !now.Before(c.since[ContentServer].Add(c.o.Cap))
 		idle := c.apps[ContentServer].requests == 0 && !c.converting(now)
-		if capped || ((c.quiet || c.hurry) && idle) {
+		early := c.hurry && !now.Before(c.hurryAt)
+		if capped || ((c.quiet || early) && idle) {
 			c.want[ContentServer] = false
 			c.restarting = true
 			c.restartFrom = c.apps[ContentServer].starts
@@ -584,6 +592,9 @@ func (c *Coordinator) arm(now time.Time) {
 	}
 	if c.want[ContentServer] && !c.restarting {
 		soonest(c.since[ContentServer].Add(c.o.Cap))
+		if c.hurry {
+			soonest(c.hurryAt)
+		}
 		for _, s := range c.unread {
 			soonest(s.Add(c.o.Cap))
 		}

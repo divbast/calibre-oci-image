@@ -1257,3 +1257,40 @@ func TestWrapperCountsForCalibreWeb(t *testing.T) {
 		})
 	}
 }
+
+// TestHoldPaced is a run of Calibre-Web's reads, each after a change, as
+// in a Kobo's first sync: the first read restarts calibre-server at once;
+// the next, held 1 s apart, bring no second restart until Quiet after the
+// first restart's start, and then exactly one, which lets them all go.
+func TestHoldPaced(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.running()
+	h.write(CalibreWeb)
+	first := h.held(t.Context())
+	h.expect(0, 1)
+	h.restarted()
+	if done, err := returned(first); !done || err != nil {
+		t.Fatalf("the first read: Hold returned %t, %v; want nil", done, err)
+	}
+	var reads []<-chan error
+	for i := 1; i <= 4; i++ {
+		h.clk.Advance(time.Second)
+		h.write(CalibreWeb)
+		reads = append(reads, h.held(t.Context()))
+		if _, restarts := h.r.counts(); restarts != 1 {
+			t.Fatalf("%d s after the restart's start: calibre-server restarted %d times, want 1", i, restarts)
+		}
+	}
+	h.clk.Advance(time.Second)
+	h.expect(0, 2)
+	h.restarted()
+	for i, errc := range reads {
+		if done, err := returned(errc); !done || err != nil {
+			t.Errorf("read %d: Hold returned %t, %v; want nil", i+1, done, err)
+		}
+	}
+	// The second restart read every change: none is left to restart for
+	h.clk.Advance(time.Minute)
+	h.expect(0, 2)
+}
