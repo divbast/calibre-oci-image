@@ -310,12 +310,14 @@ RUN retry() { \
     rm -rf /tmp/src "${GNUPGHOME}" /tmp/calibre-release.* /tmp/gpgv /tmp/tagsig
 
 # Calibre-Web at its commit, from the archive GitHub makes of it, held to
-# its sha256: Calibre-Web signs neither its commits nor its tags. Its own
-# updater is turned off, as upstream's packaged builds do, by the one line
-# that sets it, and the build fails unless exactly that line changed. The
-# archive fills in the commit it was made from, which the build checks,
-# since Calibre-Web reports it as its version. The tests and GitHub's
-# files stay out.
+# its sha256: Calibre-Web signs neither its commits nor its tags. Two
+# lines change, and the build fails unless exactly each of them did. Its
+# own updater is turned off, as upstream's packaged builds do, by the one
+# line that sets it. Its upload check takes application/vnd.rar for a
+# .cbr too: the name the image's libmagic gives a RAR archive, where
+# Calibre-Web looks for application/x-rar alone. The archive fills in the
+# commit it was made from, which the build checks, since Calibre-Web
+# reports it as its version. The tests and GitHub's files stay out.
 FROM toolchain AS calibreweb
 ARG CALIBRE_WEB_COMMIT
 ARG CALIBRE_WEB_SHA256
@@ -336,7 +338,16 @@ RUN install -d /app/calibre-web \
         echo "ERROR: cps/constants.py does not name the commit ${CALIBRE_WEB_COMMIT}" >&2; \
         exit 1; \
     fi \
-    && rm -rf /app/calibre-web/test /app/calibre-web/.github /tmp/calibre-web.tar.gz /tmp/constants.py /tmp/diff
+    && helper=/app/calibre-web/cps/file_helper.py \
+    && cp "${helper}" /tmp/file_helper.py \
+    && sed -i 's|^            allowed_mimetypes.append(get_mimetype("." + x))$|            allowed_mimetypes.extend([get_mimetype("." + x)] + (["application/vnd.rar"] if x == "cbr" else []))|' "${helper}" \
+    && { diff /tmp/file_helper.py "${helper}" >/tmp/diff || true; } \
+    && changed=$(grep -c '^>' /tmp/diff || true) \
+    && if [[ "${changed}" != 1 ]] || ! grep -qF '(["application/vnd.rar"] if x == "cbr" else [])' "${helper}"; then \
+        echo "ERROR: taking application/vnd.rar for a .cbr changed ${changed} lines of cps/file_helper.py, not the one that lists the types an upload may have" >&2; \
+        exit 1; \
+    fi \
+    && rm -rf /app/calibre-web/test /app/calibre-web/.github /tmp/calibre-web.tar.gz /tmp/constants.py /tmp/file_helper.py /tmp/diff
 
 # The Python packages, from requirements.lock: the pure ones from their
 # wheels, and those with C or Rust code built from source here, against
