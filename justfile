@@ -65,10 +65,11 @@ lint:
     {{ just_executable() }} ci-fresh actions-check workflow-audit actionlint shell-lint go-lint go-test reuse-lint app-lint
     {{ just_executable() }} python-lint
 
-# The demo, formatted as ruff format leaves it, under every ruff rule but
-# the few its ruff.toml lifts, and type-checked by ty, with no cache
-# written to the checkout; then its locks, which must be what its pins
-# give, as divbast-pins -check finds them against PyPI
+# The Python helpers in firstrun/, sbom/ and imagemagick/, formatted as
+# ruff format leaves them, under every ruff rule but the few ruff.toml
+# lifts, and type-checked by ty, with no cache written to the checkout;
+# then the Python locks, which must be what the pins give, as divbast-pins
+# -check finds them against PyPI
 python-lint:
     ruff format --no-cache --check . && ruff check --no-cache . && ty check .
     go run ./cmd/divbast-pins -check

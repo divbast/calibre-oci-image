@@ -40,9 +40,13 @@ repository alone.
   packages Calibre's build holds, for the SBOM.
 - `calibreweb` takes Calibre-Web at the full commit the Containerfile's
   `CALIBRE_WEB_COMMIT` names, from the archive GitHub makes of it, held to
-  its sha256: Calibre-Web signs neither its tags nor its commits. It turns
-  Calibre-Web's own updater off, by the one line that sets it, and the
-  build fails unless exactly that line changed.
+  its sha256: Calibre-Web signs neither its tags nor its commits. It
+  changes two lines of Calibre-Web, and the build fails unless each
+  change is exactly its one line: the line that sets Calibre-Web's own
+  updater, which it turns off, and the line that lists the types an
+  upload may have, which then lets a `.cbr` be `application/vnd.rar`, the
+  type the image's libmagic gives a RAR archive, so that a CBR comic can
+  be uploaded.
 - `deps` builds Calibre-Web's Python packages: every one that its
   `requirements.txt` and `optional-requirements.txt` name, but Google
   Drive's two, as [What the image turns off](#what-the-image-turns-off)
@@ -80,7 +84,8 @@ repository alone.
   Ghostscript, loads ImageMagick, and proves ImageMagick's policy, as
   [ImageMagick](#imagemagick) says.
 
-Calibre is never patched. Calibre-Web is changed in that one line alone.
+Calibre is never patched. Calibre-Web is changed in those two lines
+alone.
 
 ## Container Features
 
@@ -91,7 +96,7 @@ Calibre is never patched. Calibre-Web is changed in that one line alone.
 | Root filesystem | read-only |
 | User | uid/gid 65532 (`nonroot`) |
 | Ports | 8080, Calibre's Content Server, and 8083, Calibre-Web, on IPv4 and IPv6. The two apps themselves listen on 127.0.0.1 alone, on 18080 and 18083, and nothing else listens |
-| tmpfs required | `/tmp`, which nothing can run from (`--tmpfs /tmp:rw,noexec,nosuid,nodev,size=2g`); see [`/tmp`](#tmp) <!-- tmp-size --> |
+| tmpfs required | `/tmp`, which nothing can run from (`--tmpfs /tmp:rw,noexec,nosuid,nodev,size=2g`); see [`/tmp`](#tmp) |
 | Volumes | `/books`, the library, and `/config`, both apps' settings, which you mount, writable by 65532 |
 | Processes | PID 1, `divbast-calibre`, which runs the Content Server (`calibre-server`) and Calibre-Web, and the programs they run |
 | Shell in image | none |
@@ -115,7 +120,7 @@ Every example below:
 - gives the two admin passwords as files, from the engine's secrets, and
   never on a command line;
 - mounts the library at `/books` and the settings at `/config`;
-- gives `/tmp` 2 GiB, as [`/tmp`](#tmp) says; <!-- tmp-size -->
+- gives `/tmp` 2 GiB, as [`/tmp`](#tmp) says;
 - publishes both ports on the host's loopback alone;
 - sets `TRUSTED_PROXIES` to `192.0.2.10`, which stands for your reverse
   proxy's address, as
@@ -272,7 +277,7 @@ spec:
             - name: CALIBRE_WEB_ADMIN_PASSWORD_FILE
               value: /run/secrets/calibre/calibre-web-admin-password
             - name: TRUSTED_PROXIES
-              value: 10.42.0.0/16
+              value: 192.0.2.10
           ports:
             - {name: content, containerPort: 8080}
             - {name: web, containerPort: 8083}
@@ -328,13 +333,16 @@ spec:
   library at once.
 - An `emptyDir` cannot be mounted `noexec`, as the `--tmpfs` above is.
   With `medium: Memory`, what `/tmp` holds counts as the pod's memory.
-  <!-- tmp-size -->
 - The probes run the image's own health check, `divbast-calibre health`,
   as Docker and Podman do; see [Health](#health).
-- `TRUSTED_PROXIES` is a whole pod network here, k3s's default
-  `10.42.0.0/16`, so that the forwarded headers of the Ingress
-  controller's pods are kept. Every pod in that range is then trusted:
-  where the Ingress controller's addresses are fixed, list those instead.
+- `TRUSTED_PROXIES` stands, as in the other examples, for the address
+  that the Ingress controller's pod connects from, as this pod sees it.
+  List that address, or the addresses of the controller's pods, and not
+  the whole pod network, such as k3s's `10.42.0.0/16`: with
+  [Calibre-Web's reverse-proxy login](#behind-a-reverse-proxy) on, every
+  pod in a listed range could log in to Calibre-Web as any user. A pod's
+  address can change each time the pod is made again: change the list
+  then.
 
 ### First start
 
@@ -451,7 +459,7 @@ library, and before you move to a new image.
 Calibre-Web, and the Calibre programs it runs, keep their temporary files
 in `/tmp`, Calibre's cache is there, through `CALIBRE_CACHE_DIRECTORY`,
 and PID 1 keeps its state file there, `/tmp/divbast-calibre/state.json`.
-The examples give it 2 GiB. <!-- tmp-size --> A tmpfs keeps its files in
+The examples give it 2 GiB. A tmpfs keeps its files in
 memory, so what `/tmp` holds counts as the container's memory.
 
 The Content Server keeps its own temporary files in
@@ -475,7 +483,7 @@ In the image's measurements:
 - Calibre-Web's cover of a PDF uses `/tmp` too, about 25 bytes for each
   pixel of the first page at 150 dots an inch: 1.2 GiB for a page 49
   inches square. ImageMagick's own policy lets it write up to 2 GiB of
-  temporary files there. <!-- tmp-size -->
+  temporary files there.
 
 ### Uploads
 
@@ -488,7 +496,7 @@ In the image's measurements:
   each book added since then, and one more copy while a book is added.
 - **Port 8083**, Calibre-Web, sets no limit of its own: a book of about
   1 GiB fits, since it holds two copies in the 2 GiB `/tmp` while it takes
-  it. <!-- tmp-size -->
+  it.
 
 ## Configuration
 
@@ -689,6 +697,16 @@ it, from every other source. Leave Calibre-Web's own list of trusted proxy
 addresses at its default, `127.0.0.1,::1`: every request reaches
 Calibre-Web from PID 1, on loopback, so `TRUSTED_PROXIES` is the list that
 decides.
+
+**Turn the reverse-proxy login on only where nothing else shares the
+container's network.** Calibre-Web itself listens on 127.0.0.1:18083,
+and takes the login header from any program that reaches it there. A
+program that shares the container's loopback can reach that port
+directly, without passing PID 1, and log in to Calibre-Web as any user by
+sending the header. Under `--network host`, that is every program on the
+host. In a Kubernetes pod, it is every other container in the pod, such
+as a sidecar. A container on its own network, as in the examples above,
+in a pod with no other container, shares its loopback with no one.
 
 After each change made in Calibre-Web's admin pages, PID 1 reads the
 header's name again, which takes about a second, and requests from

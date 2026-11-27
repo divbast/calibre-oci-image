@@ -18,7 +18,7 @@ on:
     # main moved since the commit the published :latest was built from, so
     # users see at most one new image a day however many merges land. It
     # also checks whether something outside this repository has changed:
-    # the runner images, or the vulnerability database the scan reads, so a
+    # the runner images, or the advisory database the scan reads, so a
     # new advisory against the pinned image shows within a day rather than
     # a week. 22:47 UTC is 09:47 in Melbourne under daylight saving, 08:47
     # outside it: 80 minutes after the SABnzbd image's slot, so the two

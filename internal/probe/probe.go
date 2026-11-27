@@ -52,7 +52,6 @@ type Options struct {
 	// always names itself "calibre <major>.<minor>.<patch>", and the
 	// comparison is exact, so a shorter Version, such as the 9.19 that
 	// calibredb --version prints, never matches.
-	// Content Server must name.
 	Version string
 	// Within bounds each app's check: the whole exchange with it.
 	Within time.Duration

@@ -8,7 +8,7 @@
 "aqua:hadolint/hadolint" = "2.15.1"
 "aqua:koalaman/shellcheck" = "0.11.0"
 "aqua:mvdan/sh" = "3.14.1"
-# The demo: ruff formats and lints it, and ty type-checks it
+# The Python helpers: ruff formats and lints them, and ty type-checks them
 "aqua:astral-sh/ruff" = "0.17.6"
 "aqua:astral-sh/ty" = "0.0.111"
 "aqua:rhysd/actionlint" = "1.7.12"
@@ -29,8 +29,5 @@
 # The toolchain is the one pinned above, never one go.mod's toolchain line
 # would download
 GOTOOLCHAIN = "local"
-# A PHP app made from the template keeps Composer's vendor/ at the module
-# root, and with a require in go.mod Go would take it for a Go vendor
-# directory and refuse to build. readonly is the default outside vendor
-# mode, and still refuses to edit go.mod.
+# readonly is the default outside vendor mode, and refuses to edit go.mod
 GOFLAGS = "-mod=readonly"

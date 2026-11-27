@@ -4,7 +4,9 @@
 # Calibre's version, which tags the image: app-publish.yml reads it from
 # this line, by the name build.yml gives as version-arg. The two checksums
 # are of the bundles for x86-64 and for ARM, which download.calibre-ebook.com
-# serves, empty until go run ./cmd/divbast-pins fills them in.
+# serves. Renovate's update of the version empties them, and go run
+# ./cmd/divbast-pins fills them in, so they are empty only while an update
+# waits for it.
 ARG CALIBRE_VERSION=9.19.0
 ARG CALIBRE_SHA256_X86_64=35c1cbda1a2548aceeb89cb0a4be47a36025b5dc102ac046f7eaf98ba46a452d
 ARG CALIBRE_SHA256_ARM64=8de5c5d3af3f28e0227e215a27e8d69c14c50a38cc3065b249996997df392a2f
@@ -13,7 +15,8 @@ ARG CALIBRE_SHA256_ARM64=8de5c5d3af3f28e0227e215a27e8d69c14c50a38cc3065b24999699
 ARG CALIBRE_WEB_COMMIT=79d35711d73491881ecd2b13ded02c277543dbcb
 ARG CALIBRE_WEB_SHA256=0f4f0bf0e918904c13fee5052decc03cded8ac511b773f7d71245bc05309f609
 # The tag that names both apps, <Calibre version>-cw.<first 7 of the
-# Calibre-Web commit>, written by go run ./cmd/divbast-pins, which -check holds to them
+# Calibre-Web commit>, written by go run ./cmd/divbast-pins, which -check
+# holds to them
 ARG IMAGE_PAIR=9.19.0-cw.79d3571
 # ImageMagick, built from the commit its annotated tag names
 ARG IMAGEMAGICK_VERSION=7.1.2-36
@@ -43,14 +46,14 @@ FROM ${RUNTIME_IMAGE} AS runtime
 
 # The tools every build stage below uses, from DHI's own repository alone:
 # Debian's sources are deleted first, so apt takes nothing DHI does not
-# build, and fails on anything it lacks rather than falling back. Each
-# package is pinned, one name=version a line, to DHI's build, which
-# Renovate's deb manager reads; DHI deletes a superseded build, so a pin
-# can fail the build until Renovate's PR moves it. Beside SABnzbd's set:
-# xz for Calibre's bundle and Ghostscript's tarball, gpgv for the bundle's
-# signature, and the headers that ImageMagick, Ghostscript and the Python
-# packages with C code build against. Python's headers come with the
-# image.
+# build, and a package DHI does not build fails the build rather than
+# coming from Debian. Each package is pinned, one name=version a line, to
+# DHI's build, which Renovate's deb manager reads; DHI deletes a
+# superseded build, so a pin can fail the build until Renovate's PR moves
+# it. Beside SABnzbd's set: xz for Calibre's bundle and Ghostscript's
+# tarball, gpgv for the bundle's signature, and the headers that
+# ImageMagick, Ghostscript and the Python packages with C code build
+# against. Python's headers come with the image.
 FROM dhi.io/python:3.15.2-debian13-dev@sha256:a1069444b00f18a15f0088a7f6c33ed6070d7f2593919130892b22c5a4f124b7 AS toolchain
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 RUN rm /etc/apt/sources.list.d/debian.sources \
@@ -423,13 +426,14 @@ RUN --network=none python3 -m compileall -q -j0 -o 2 --invalidation-mode uncheck
 # for a PDF's cover: from its release tarball, held to its sha256, with a
 # stack protector, FORTIFY_SOURCE, PIE and full RELRO. It is built as a
 # library, which ImageMagick calls in its own process: ImageMagick runs
-# the gs program only through a shell, which the image does not have. The image libraries
-# it can take from DHI it takes from DHI, so the scan and DHI's updates
-# cover them, and its own copies of them are deleted first; it keeps its
-# own jbig2dec, which DHI does not build, and the SBOM names. No X, no
-# printing, no system font list, and nothing it would only use for OCR or
-# printer drivers. The library ships with its resources compiled in, and
-# the gs program that runs it; its headers go only to ImageMagick's build.
+# the gs program only through a shell, which the image does not have. The
+# libraries it can take from DHI it takes from DHI, so the scan and DHI's
+# updates cover them, and its own copies of them are deleted first; it
+# keeps its own jbig2dec, which DHI does not build, and the SBOM names. No
+# X, no printing, no system font list, and nothing it would only use for
+# OCR or printer drivers. The library ships with its resources compiled
+# in, and the gs program that runs it; its headers go only to
+# ImageMagick's build.
 FROM toolchain AS ghostscript
 ARG GHOSTSCRIPT_VERSION
 ARG GHOSTSCRIPT_TAG
@@ -795,7 +799,8 @@ COPY --from=probe --chown=65532:65532 /out/books /books
 # log line to the engine as it is written. Calibre keeps its settings in
 # /config/calibre, and its temporary files and its cache in /tmp, but for
 # calibre-server, whose temporary files PID 1 sends to
-# /config/calibre/tmp; Calibre-Web its cache in /config/calibre-web. Wand finds ImageMagick by MAGICK_HOME.
+# /config/calibre/tmp; Calibre-Web its cache in /config/calibre-web. Wand
+# finds ImageMagick by MAGICK_HOME.
 # Chromium, which draws the pages of Calibre's PDF output, runs without
 # a GPU, without its namespace sandbox, and with its shared memory in
 # /tmp: rootless Podman lets it try a namespace sandbox that then fails,
@@ -831,7 +836,7 @@ LABEL org.opencontainers.image.source="https://github.com/divbast/calibre-oci-im
     io.github.divbast.scan.sboms.advisory="/usr/local/share/divbast/calibre-bundle.cdx.json"
 
 EXPOSE 8080 8083
-# Exec form: the shell form would need /bin/sh, which the image lacks.
+# Exec form: the shell form would need /bin/sh, and the image has no shell.
 # --timeout must clear divbast-calibre health's own budget: it allows each
 # of its two app checks 4 s and runs them one after the other, so an app
 # that accepts and never answers costs 8 s. A shorter timeout kills the

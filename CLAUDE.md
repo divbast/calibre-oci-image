@@ -61,7 +61,7 @@ is a breaking change.
 | App ports | calibre-server on **127.0.0.1:18080**, Calibre-Web on **127.0.0.1:18083**, loopback alone |
 | Health | the shipped probe, on the apps' loopback ports |
 | Other listeners | **none**, TCP or UDP; Bonjour off |
-| tmpfs required | exactly one: `/tmp`, at **2 GiB**, `noexec,nosuid,nodev` <!-- tmp-size --> |
+| tmpfs required | exactly one: `/tmp`, at **2 GiB**, `noexec,nosuid,nodev` |
 | Writable mounts | `/tmp`, `/books` and `/config` |
 | Volumes | `/books` and `/config`, empty, owned by 65532, with **no `VOLUME`** instruction |
 | Shell, package manager | **none**; DHI's Python runtime ships pip, setuptools and wheel, which nothing runs |
@@ -106,8 +106,8 @@ is a breaking change.
   /config/calibre/tmp`, in place of the image's `/tmp`: an add through
   8080 leaves two or three copies there, and one more for a few seconds
   (a 300 MiB book: 1.2 GiB, then 900 MiB), and they add up, add after
-  add, until calibre-server ends: the user's answer is to document it,
-  with Calibre-Web or a container restart for a large import. The
+  add, until calibre-server ends. The README says so, and points a large
+  import to Calibre-Web, or to a container restart after it. The
   supervisor's `Before` empties that folder in place before each
   calibre-server start, first, crash and planned alike, and never while it
   runs, then sets it 0700. It never removes or replaces the folder, which
@@ -116,10 +116,10 @@ is a breaking change.
   It refuses a symbolic link there, unfollowed, and a file, with one line
   each try: emptying where a link points could empty more than temporary
   files. Everything else keeps `/tmp`
-- **The supervisor's times are the user's**: a child that ends on its own
-  starts again after 1 s, doubling to 60 s, back to 1 s after 10 minutes
-  up. A stop gives each child 8 s after SIGTERM, then SIGKILL to its
-  process group, and exit 1. PID 1 also reaps every orphan
+- **The supervisor's times are part of the contract**: a child that ends
+  on its own starts again after 1 s, doubling to 60 s, back to 1 s after
+  10 minutes up. A stop gives each child 8 s after SIGTERM, then SIGKILL
+  to its process group, and exit 1. PID 1 also reaps every orphan
 - **The two apps stay in step through PID 1.** It polls `metadata.db`, its
   `-journal` and its `-wal` every 1 s, and puts each change down to the app
   with a request that can change the library open, or ended at most 10 s
@@ -137,13 +137,13 @@ is a breaking change.
   library, but `POST /conversion/status/<id>`, with 503, `Retry-After: 10`
   and one line; while it runs, 8080 refuses every request. A planned
   restart counts as healthy for under 2 minutes of downtime. Every number
-  here is the user's: a new one goes to the user first. In the second
-  before PID 1's next look, an 8080 write after a Calibre-Web edit still
-  goes through: the 1 s is the user's number, and in every test the
+  here is part of the contract: a new one goes to the user first. In the
+  second before PID 1's next look, an 8080 write after a Calibre-Web edit
+  still goes through: PID 1 looks once a second, and in every test the
   library stayed whole. The probe can pass up to a second before 8080's
   gate opens after a restart: PID 1 opens it at its next 1 s look at
-  calibre-server's port, and the probe asks that port directly. Both are
-  accepted as they are
+  calibre-server's port, and the probe asks that port directly. Neither
+  gap lasts more than that second
 - **Calibre-Web's own calibredb exports are held, not refused.** On
   8080, a request from a loopback peer, logged in by Digest as
   `calibre-web` (both signs, never one), is the wrapper's. When it is an
@@ -159,8 +159,8 @@ is a breaking change.
   is let go when a conversion starts, so a held export never waits for a
   conversion. Without this a download right after a Calibre-Web edit
   answered 404 for 5.5 s, then came without its metadata, and a KEPUB
-  conversion failed. The user accepted the cost: every download, send
-  and KEPUB carries the book's current metadata. `show_metadata`, which
+  conversion failed. In return for the wait, every download, send and
+  KEPUB carries the book's current metadata. `show_metadata`, which
   Calibre's own conversions (not kepubify) read first, is not held while
   a restart is only to come, so such a conversion within about 5 s of an
   edit may use the old metadata
@@ -251,7 +251,7 @@ or read in upstream's source where the line says so:
   8 ms
 - The image: 2.34 GB on disk and 585 MB compressed on arm64, 2.37 GB and
   596 MB on amd64. Calibre's bundle is about 870 MiB of it
-- `/tmp`, at 2 GiB <!-- tmp-size -->: a 300 MiB add through 8080 grows
+- `/tmp`, at 2 GiB: a 300 MiB add through 8080 grows
   it by under 16 MiB, its copies going to `/config/calibre/tmp`; a 300 MiB
   upload through 8083 holds 600 MiB of it, two copies, while Calibre-Web
   takes it, so 8083 takes about 1 GiB (1,100 MiB failed: "could not saved
@@ -530,9 +530,9 @@ that `pins.txt` does not have fails that task, naming the line to add.
 - All linter gates are enforced as errors. Any suppression needs a
   justification beside it
 - **The acceptance suite is Go, on divbast/ci's harness**: every
-  container runs under the contract's confinement, with `/tmp` at 2 GiB
-  <!-- tmp-size -->, and with both passwords given as `_FILE`s, as test
-  passwords that meet Calibre-Web's rules
+  container runs under the contract's confinement, with `/tmp` at 2 GiB,
+  and with both passwords given as `_FILE`s, as test passwords that meet
+  Calibre-Web's rules
 - **Go is modern and idiomatic, on the standard library alone**, under
   ci's `go/golangci.yml`. The two first-start helpers are Python, run by
   Calibre's and Calibre-Web's own interpreters, under ruff and ty
