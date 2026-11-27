@@ -650,6 +650,10 @@ loopback, so each app sees every request come from 127.0.0.1.
 - It lists IP addresses and CIDR ranges, separated by commas, such as
   `192.0.2.10,198.51.100.0/24`. An entry that is neither stops the start,
   exit 1, with a line naming it. Unset or empty, it lists no one.
+- An IPv4 address or range written in IPv6 form, such as
+  `::ffff:198.51.100.0/120`, counts as the IPv4 one, here
+  `198.51.100.0/24`. Such a range shorter than `/96` holds more than IPv4
+  addresses, and stops the start, with a line naming it.
 - From a listed source, PID 1 keeps `X-Forwarded-*`, `Forwarded`,
   `X-Real-IP`, `X-Scheme`, `X-Script-Name` and Calibre-Web's login header,
   and adds the source's address to `X-Forwarded-For`.
