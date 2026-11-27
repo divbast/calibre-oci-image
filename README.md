@@ -582,12 +582,16 @@ from the requests it passed on to each:
 - The app that made a change is never reloaded for it.
 
 A request that can change the library counts while the app is still
-answering it. Once the app has answered, it counts for 10 seconds, and
-only if the app did what it was asked: an answer of 400 or more, such as
-`404 Not Found`, means that the app changed nothing. So the requests that
-robots send to any address they find, such as a `POST` to a page
-Calibre-Web does not have, never restart the Content Server after an edit
-made through port 8080.
+answering it. Once it is over, it counts for 10 more seconds, unless the
+app itself answered it with 400 or more, such as `404 Not Found`: that
+answer means that the app changed nothing. So the requests that robots
+send to any address they find, such as a `POST` to a page Calibre-Web does
+not have, never restart the Content Server after an edit made through port
+8080. Only an answer from the app itself can stop a request from
+counting. When the app gave no answer, for example because the client
+left before the app answered, the request still counts, because the app
+may still have made the change. The `502 Bad Gateway` that PID 1 gives
+when it cannot reach the app is PID 1's own answer, not the app's.
 
 PID 1 first waits until the library has had no change for 5 seconds. It
 restarts the Content Server only when no request to it is still being

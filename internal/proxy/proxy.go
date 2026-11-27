@@ -47,8 +47,8 @@ type Hooks struct {
 
 	// Started runs when a request goes on. The function it returns is
 	// called once, when the response has been fully copied to the client or
-	// the request failed, with the status the app gave, or 502 when it
-	// gave none.
+	// the request failed: with the status the app sent, or with NoAnswer
+	// when the proxy has no whole answer from the app (see NoAnswer).
 	Started func(*http.Request) (done func(status int))
 
 	// Observe, when it is set, runs when a request goes on, after Started.
@@ -65,6 +65,14 @@ type Hooks struct {
 	// went away first.
 	Failed func(*http.Request, error)
 }
+
+// NoAnswer is the status Hooks.Started's function is given when the proxy
+// has no whole answer from the app: it could not reach the app, the client
+// left before the app answered, the app's answer broke off, or the app
+// switched protocols, which the proxy does not see the status of. The 502
+// that a client still there then gets is the proxy's own, not the app's,
+// and the app may have done what it was asked all the same.
+const NoAnswer = 0
 
 // ObserveLimit is how much of a response body the proxy keeps for
 // Hooks.Observe.
@@ -146,6 +154,16 @@ func (x *exchange) fail(err error) {
 	if x != nil && x.err == nil {
 		x.err = err
 	}
+}
+
+// answer returns what Hooks.Started's function is given: status, the
+// status the client was sent, when the exchange did not fail, and NoAnswer
+// when it did, since a 502 the client then got is the proxy's own.
+func (x *exchange) answer(status int) int {
+	if x.err != nil {
+		return NoAnswer
+	}
+	return status // 0, which is NoAnswer, when no status was written
 }
 
 // watchBody has the proxy read the app's response body through a
@@ -249,7 +267,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			observed(status, x.header, x.body, x.eof && !x.over && x.err == nil)
 		}
 		if done != nil {
-			done(status)
+			done(x.answer(sw.status))
 		}
 		if failed := h.c.Hooks.Failed; failed != nil && x.err != nil && r.Context().Err() == nil {
 			failed(seen, x.err)

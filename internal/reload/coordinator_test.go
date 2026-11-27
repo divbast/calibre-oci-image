@@ -335,6 +335,47 @@ func TestRefusedWriteNotAnEdit(t *testing.T) {
 	}
 }
 
+// noAnswer is the status a request is over with when its app sent no
+// answer: the proxy's NoAnswer.
+const noAnswer = 0
+
+// TestNoAnswerStillAnEdit is an edit in Calibre-Web that its app sent no
+// answer to, since its client left first: Calibre-Web goes on, and changes
+// the library 200 ms after the request is over. The request counts as a
+// write, as an open one does, so calibre-server restarts for that change:
+// when an 8080 edit ended 1 s before the request did, and when the change
+// falls in calibre-server's own start. Only an answer the app itself sent,
+// of 400 or more, stops a request counting.
+func TestNoAnswerStillAnEdit(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                 string
+		before               func(*harness)
+		reconnects, restarts int
+	}{
+		{"after an 8080 edit", func(h *harness) {
+			h.write(ContentServer)
+			h.clk.Advance(time.Second)
+		}, 1, 1},
+		{"in calibre-server's own start", func(h *harness) {
+			h.c.Accepting(ContentServer, h.c.Started(ContentServer))
+			h.clk.Advance(time.Second)
+		}, 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			h.running()
+			tc.before(h)
+			h.c.RequestStarted(CalibreWeb, http.MethodPost, "/admin/book/12")(noAnswer)
+			h.clk.Advance(200 * time.Millisecond)
+			h.change() // Calibre-Web's edit, made after its client left
+			h.clk.Advance(time.Minute)
+			h.expect(tc.reconnects, tc.restarts)
+		})
+	}
+}
+
 // TestQuiet is three changes 2 s apart: one reload of each app, 5 s after
 // the last.
 func TestQuiet(t *testing.T) {

@@ -350,9 +350,107 @@ func TestStartedDone(t *testing.T) {
 	}
 	srv.Close() // now upstream refuses connections
 	w = do(h, untrustedPeer, "GET", "http://calibre.test/", nil)
-	if w.Code != 502 || len(statuses) != 2 || statuses[1] != 502 || calls != 2 {
+	if w.Code != 502 || len(statuses) != 2 || statuses[1] != NoAnswer || calls != 2 {
 		t.Fatalf("down upstream: %d, done calls %v", w.Code, statuses)
 	}
+}
+
+// doneStatus is Hooks whose Started's function sends the status it is
+// given on the channel.
+func doneStatus() (hooks Hooks, statuses <-chan int) {
+	ch := make(chan int, 1)
+	return Hooks{Started: func(*http.Request) func(int) {
+		return func(s int) { ch <- s }
+	}}, ch
+}
+
+// gotStatus returns the status Started's function was given, waiting for
+// it in real time.
+func gotStatus(t *testing.T, statuses <-chan int) int {
+	t.Helper()
+	select {
+	case s := <-statuses:
+		return s
+	case <-time.After(10 * time.Second):
+		t.Fatal("Started's function was not called")
+		return 0
+	}
+}
+
+// TestStartedNoAnswer is a request the app sent no answer to, or no whole
+// one: the client left before the app answered, the app could not be
+// reached, or its answer broke off. Started's function is given NoAnswer,
+// not the proxy's own 502, since the app may have done what it was asked
+// all the same. An app that answers 502 itself has answered, and the
+// function is given its 502. The client that is still there gets 502 for
+// an app that could not be reached, as before.
+func TestStartedNoAnswer(t *testing.T) {
+	t.Parallel()
+	t.Run("the client leaves before the app answers", func(t *testing.T) {
+		t.Parallel()
+		arrived := make(chan struct{})
+		u := target(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			close(arrived)
+			<-r.Context().Done() // the app goes on with the request, but no one gets its answer
+		}))
+		hooks, statuses := doneStatus()
+		front := httptest.NewServer(New(&Config{Target: u, Hooks: hooks}))
+		t.Cleanup(front.Close)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		go func() {
+			select {
+			case <-arrived:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, front.URL+"/admin/book/12", http.NoBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+			t.Fatal("the request was answered")
+		}
+		if got := gotStatus(t, statuses); got != NoAnswer {
+			t.Errorf("Started's function was given %d, want NoAnswer (%d)", got, NoAnswer)
+		}
+	})
+	t.Run("the app cannot be reached", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.NotFoundHandler())
+		u, err := url.Parse(srv.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv.Close()
+		hooks, statuses := doneStatus()
+		w := do(New(&Config{Target: u, Hooks: hooks}), untrustedPeer, http.MethodPost, "http://calibre.test/admin/book/12", nil)
+		if got := gotStatus(t, statuses); w.Code != http.StatusBadGateway || got != NoAnswer {
+			t.Errorf("the client got %d, and Started's function %d; want 502 and NoAnswer (%d)", w.Code, got, NoAnswer)
+		}
+	})
+	t.Run("the app's answer breaks off", func(t *testing.T) {
+		t.Parallel()
+		hooks, statuses := doneStatus()
+		do(New(&Config{Target: brokenOff(t), Hooks: hooks}), untrustedPeer, http.MethodPost, "http://calibre.test/admin/book/12", nil)
+		if got := gotStatus(t, statuses); got != NoAnswer {
+			t.Errorf("Started's function was given %d, want NoAnswer (%d)", got, NoAnswer)
+		}
+	})
+	t.Run("the app answers 502 itself", func(t *testing.T) {
+		t.Parallel()
+		u := target(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, "the app's own 502")
+		}))
+		hooks, statuses := doneStatus()
+		w := do(New(&Config{Target: u, Hooks: hooks}), untrustedPeer, http.MethodPost, "http://calibre.test/admin/book/12", nil)
+		if got := gotStatus(t, statuses); w.Code != http.StatusBadGateway || w.Body.String() != "the app's own 502" || got != http.StatusBadGateway {
+			t.Errorf("the client got %d %q, and Started's function %d; want the app's 502, and 502", w.Code, w.Body.String(), got)
+		}
+	})
 }
 
 // heapWatch records the highest heap in use while it runs.

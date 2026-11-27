@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/divbast/calibre-oci-image/internal/proxy"
 	"github.com/divbast/calibre-oci-image/internal/reload"
 	"github.com/divbast/calibre-oci-image/internal/supervise"
 )
@@ -837,6 +839,114 @@ func TestCoordinatorStopsWithServe(t *testing.T) {
 	}
 	if deny, _, why := c.Gate(reload.ContentServer, http.MethodGet, "/ajax/books"); deny {
 		t.Errorf("a read through 8080 is refused after the stop: %q", why)
+	}
+}
+
+// doneTold is the Coordinator, but that each request's done function also
+// sends the status it was given on over, once the Coordinator has it.
+type doneTold struct {
+	*reload.Coordinator
+	over chan int
+}
+
+func (d doneTold) RequestStarted(app reload.App, method, path string) func(int) {
+	done := d.Coordinator.RequestStarted(app, method, path)
+	return func(status int) {
+		done(status)
+		d.over <- status
+	}
+}
+
+// cutOff sends an edit to Calibre-Web, through a proxy with Calibre-Web's
+// hooks to d, and leaves once Calibre-Web has it, before Calibre-Web
+// answers. It returns the status the edit's done function was given.
+func cutOff(t *testing.T, d doneTold) int {
+	t.Helper()
+	arrived := make(chan struct{})
+	app := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(arrived)
+		<-r.Context().Done() // Calibre-Web goes on with the edit, but no one gets its answer
+	}))
+	t.Cleanup(app.Close)
+	u, err := url.Parse(app.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(proxy.New(&proxy.Config{Target: u, Hooks: hooks(d, reload.CalibreWeb, func() {}, io.Discard)}))
+	t.Cleanup(front.Close)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		select {
+		case <-arrived:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, front.URL+"/admin/book/12", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("the edit was answered")
+	}
+	select {
+	case status := <-d.over:
+		return status
+	case <-time.After(10 * time.Second):
+		t.Fatal("the proxy did not finish the edit")
+		return 0
+	}
+}
+
+// TestCutOffEditCounts runs Calibre-Web's port's proxy and hooks against
+// a Coordinator on a clock the test moves. An edit's client leaves before
+// Calibre-Web answers; the proxy's own 502 is not Calibre-Web's answer,
+// and Calibre-Web goes on, changing the library 200 ms later. That change
+// restarts calibre-server, as one Calibre-Web answered would: when an
+// 8080 edit ended 1 s before, and when it falls in calibre-server's own
+// start.
+func TestCutOffEditCounts(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		before func(*reload.Coordinator, *manualClock)
+	}{
+		{"after an 8080 edit", func(c *reload.Coordinator, clk *manualClock) {
+			done := c.RequestStarted(reload.ContentServer, http.MethodPost, "/cdb/set-fields/1")
+			c.DBChanged(clk.Now())
+			done(http.StatusOK)
+			clk.Advance(time.Second)
+		}},
+		{"in calibre-server's own start", func(c *reload.Coordinator, clk *manualClock) {
+			c.Accepting(reload.ContentServer, c.Started(reload.ContentServer))
+			clk.Advance(time.Second)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			clk := &manualClock{now: time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC), armed: make(chan time.Time, 64)}
+			rl := &countingReloader{restarted: make(chan struct{}, 8)}
+			c := reload.New(clk, rl, reloadOptions)
+			t.Cleanup(c.Stop)
+			for _, app := range []reload.App{reload.ContentServer, reload.CalibreWeb} {
+				c.Accepting(app, c.Started(app))
+			}
+			clk.Advance(time.Minute)
+			tc.before(c, clk)
+			if got := cutOff(t, doneTold{Coordinator: c, over: make(chan int, 1)}); got != proxy.NoAnswer {
+				t.Errorf("the edit's done function was given %d, want proxy.NoAnswer (%d)", got, proxy.NoAnswer)
+			}
+			clk.Advance(200 * time.Millisecond)
+			c.DBChanged(clk.Now()) // Calibre-Web's edit, made after its client left
+			clk.Advance(time.Minute)
+			select {
+			case <-rl.restarted:
+			case <-time.After(5 * time.Second):
+				t.Error("calibre-server did not restart for Calibre-Web's edit")
+			}
+		})
 	}
 }
 

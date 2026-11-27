@@ -123,13 +123,16 @@ is a breaking change.
 - **The two apps stay in step through PID 1.** It polls `metadata.db`, its
   `-journal` and its `-wal` every 1 s, and puts each change down to the app
   with a request that can change the library open, or ended at most 10 s
-  before with an answer below 400: `internal/reload/routes.go` lists those
-  routes for each app, and a route it does not know counts as one. A
-  request the app refused or failed changed nothing, so a POST with no
-  login to a page Calibre-Web does not have, answered 404, never restarts
-  calibre-server for an 8080 edit that follows. A change Calibre-Web made
-  restarts calibre-server; one calibre-server made reconnects Calibre-Web;
-  the writer is never reloaded. A change during an app's own start or
+  before, unless the app itself answered it 400 or more:
+  `internal/reload/routes.go` lists those routes for each app, and a route
+  it does not know counts as one. A request the app refused or failed
+  changed nothing, so a POST with no login to a page Calibre-Web does not
+  have, answered 404, never restarts calibre-server for an 8080 edit that
+  follows. One the app sent no answer to, as when its client left first,
+  still counts: the proxy gives `done` `proxy.NoAnswer`, not its own 502,
+  which is not the app's answer. A change Calibre-Web made restarts
+  calibre-server; one calibre-server made reconnects Calibre-Web; the
+  writer is never reloaded. A change during an app's own start or
   reload is that app's own; one nothing explains reloads both. A reload
   waits for 5 s of quiet; a restart also waits until no 8080 request is
   open and no tracked conversion runs; neither waits more than 10 minutes.
