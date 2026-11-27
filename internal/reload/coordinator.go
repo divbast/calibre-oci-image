@@ -250,6 +250,32 @@ func (c *Coordinator) Hold(ctx context.Context) error {
 	}
 }
 
+// WaitRestart is for any other request to the Content Server from inside
+// the container: while a restart of calibre-server runs, it returns once
+// the new calibre-server takes connections, so the request waits rather
+// than being refused, and it returns at once otherwise. calibredb's first
+// request of a call carries no login yet, so Hold cannot know it; only the
+// image's own tools reach the Content Server from inside. It returns
+// ctx's error when ctx ends first, and nil when the Coordinator stops.
+func (c *Coordinator) WaitRestart(ctx context.Context) error {
+	c.mu.Lock()
+	if c.stopped || !c.restarting {
+		c.mu.Unlock()
+		return nil
+	}
+	if c.held == nil {
+		c.held = make(chan struct{})
+	}
+	held := c.held
+	c.mu.Unlock()
+	select {
+	case <-held:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // release lets every held request go on. The caller holds the lock.
 func (c *Coordinator) release() {
 	if c.held != nil {

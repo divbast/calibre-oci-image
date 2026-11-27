@@ -427,16 +427,19 @@ type events interface {
 	RequestStarted(app reload.App, method, path string) (done func(status int))
 	WrapperStarted() (done func())
 	Hold(ctx context.Context) error
+	WaitRestart(ctx context.Context) error
 	Gate(app reload.App, method, path string) (deny bool, retryAfter time.Duration, reason string)
 	Answered(method, path string, status int, header http.Header, body []byte, whole bool)
 }
 
 // hooks joins app's proxy to the Coordinator: each request is counted, and
 // each failure the app gives is logged. On the Content Server's port,
-// requests are also gated, and the answers about conversions read; and a
+// requests are also gated, and the answers about conversions read; a
 // request from Calibre-Web's own calibredb has look look at the library
 // first, then is held until calibre-server reads the library as it is,
-// and counts as Calibre-Web's too.
+// and counts as Calibre-Web's too; and any other request from inside the
+// container waits while calibre-server restarts, rather than being
+// refused.
 func hooks(apps events, app reload.App, look func(), logw io.Writer) proxy.Hooks {
 	h := proxy.Hooks{
 		Started: func(r *http.Request) func(int) { return apps.RequestStarted(app, r.Method, r.URL.Path) },
@@ -459,11 +462,14 @@ func hooks(apps events, app reload.App, look func(), logw io.Writer) proxy.Hooks
 		}
 	}
 	h.Hold = func(r *http.Request) error {
-		if !fromWrapper(r) {
-			return nil
+		switch {
+		case fromWrapper(r):
+			look()
+			return apps.Hold(r.Context())
+		case fromLoopback(r):
+			return apps.WaitRestart(r.Context())
 		}
-		look()
-		return apps.Hold(r.Context())
+		return nil
 	}
 	h.Gate = func(r *http.Request) (bool, time.Duration, string) { return apps.Gate(app, r.Method, r.URL.Path) }
 	h.Observe = func(r *http.Request) func(int, http.Header, []byte, bool) {
@@ -483,11 +489,14 @@ func hooks(apps events, app reload.App, look func(), logw io.Writer) proxy.Hooks
 // container can, and logged in by digest as the Content Server's internal
 // user. Both must hold.
 func fromWrapper(r *http.Request) bool {
+	return fromLoopback(r) && digestUser(r.Header.Get("Authorization")) == firststart.InternalUser
+}
+
+// fromLoopback reports whether r's TCP peer is a loopback address: a
+// program inside the container, which only the image's own tools are.
+func fromLoopback(r *http.Request) bool {
 	peer, err := netip.ParseAddrPort(r.RemoteAddr)
-	if err != nil || !peer.Addr().Unmap().IsLoopback() {
-		return false
-	}
-	return digestUser(r.Header.Get("Authorization")) == firststart.InternalUser
+	return err == nil && peer.Addr().Unmap().IsLoopback()
 }
 
 // digestParam is the username of a digest Authorization header.

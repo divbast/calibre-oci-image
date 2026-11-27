@@ -255,6 +255,7 @@ type fakeEvents struct {
 	gated    []string
 	answered []string
 	holds    int
+	waits    int // WaitRestart's calls
 	wrapped  int // WrapperStarted's done functions called
 }
 
@@ -270,6 +271,13 @@ func (f *fakeEvents) Hold(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.holds++
+	return nil
+}
+
+func (f *fakeEvents) WaitRestart(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.waits++
 	return nil
 }
 
@@ -489,24 +497,27 @@ func TestTracker(t *testing.T) {
 // TestHoldWrapper: on 8080, a request from the loopback that logs in by
 // digest as calibre-web, Calibre-Web's own calibredb, has PID 1 look at
 // the library, is held, and counts as Calibre-Web's once it goes on; no
-// other request is, whatever it shares with it.
+// other request is, whatever it shares with it. Any other request from
+// the loopback waits out a restart; one from outside never waits.
 func TestHoldWrapper(t *testing.T) {
 	t.Parallel()
 	const digest = `Digest username="calibre-web", realm="calibre", nonce="n", uri="/cdb/cmd/export/0", response="r"`
 	cases := []struct {
 		name, peer, auth string
-		held             bool
+		held, waits      bool // held as the wrapper's, or waiting out a restart alone
 	}{
-		{"the wrapper, on IPv4", "127.0.0.1:40000", digest, true},
-		{"the wrapper, on IPv6", "[::1]:40000", digest, true},
-		{"the wrapper, IPv4 in IPv6", "[::ffff:127.0.0.1]:40000", digest, true},
-		{"the scheme in other case, the parameter elsewhere", "127.0.0.1:40000", `digest realm="calibre", username="calibre-web", nonce="n"`, true},
-		{"the loopback, no login", "127.0.0.1:40000", "", false},
-		{"the loopback, as admin", "127.0.0.1:40000", `Digest username="admin", realm="calibre"`, false},
-		{"the loopback, Basic", "127.0.0.1:40000", "Basic Y2FsaWJyZS13ZWI6eA==", false},
-		{"the loopback, a name that only ends so", "127.0.0.1:40000", `Digest username="x-calibre-web", realm="calibre"`, false},
-		{"a client outside, as calibre-web", "192.0.2.7:40000", digest, false},
-		{"the container's own address, as calibre-web", "10.89.0.2:40000", digest, false},
+		{"the wrapper, on IPv4", "127.0.0.1:40000", digest, true, false},
+		{"the wrapper, on IPv6", "[::1]:40000", digest, true, false},
+		{"the wrapper, IPv4 in IPv6", "[::ffff:127.0.0.1]:40000", digest, true, false},
+		{"the scheme in other case, the parameter elsewhere", "127.0.0.1:40000", `digest realm="calibre", username="calibre-web", nonce="n"`, true, false},
+		{"the loopback, no login", "127.0.0.1:40000", "", false, true},
+		{"the loopback on IPv6, no login", "[::1]:40000", "", false, true},
+		{"the loopback, as admin", "127.0.0.1:40000", `Digest username="admin", realm="calibre"`, false, true},
+		{"the loopback, Basic", "127.0.0.1:40000", "Basic Y2FsaWJyZS13ZWI6eA==", false, true},
+		{"the loopback, a name that only ends so", "127.0.0.1:40000", `Digest username="x-calibre-web", realm="calibre"`, false, true},
+		{"a client outside, as calibre-web", "192.0.2.7:40000", digest, false, false},
+		{"the container's own address, as calibre-web", "10.89.0.2:40000", digest, false, false},
+		{"a client outside, no login", "192.0.2.7:40000", "", false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -523,12 +534,18 @@ func TestHoldWrapper(t *testing.T) {
 				t.Fatal(err)
 			}
 			h.Started(r)(http.StatusOK)
-			want := 0
+			want, waits := 0, 0
 			if tc.held {
 				want = 1
 			}
+			if tc.waits {
+				waits = 1
+			}
 			if looks != want || f.holds != want || f.wrapped != want {
 				t.Errorf("looked %d times, held %d and counted %d for Calibre-Web, want %d each", looks, f.holds, f.wrapped, want)
+			}
+			if f.waits != waits {
+				t.Errorf("waited out a restart %d times, want %d", f.waits, waits)
 			}
 			if len(f.started) != 1 {
 				t.Errorf("Started counted %d requests, want 1", len(f.started))

@@ -1294,3 +1294,58 @@ func TestHoldPaced(t *testing.T) {
 	h.clk.Advance(time.Minute)
 	h.expect(0, 2)
 }
+
+// TestWaitRestart is a request from inside the container that is not
+// known as Calibre-Web's: it waits only while a restart runs, until the
+// new calibre-server takes connections, and never while one is to come.
+func TestWaitRestart(t *testing.T) {
+	t.Parallel()
+	wait := func(h *harness, ctx context.Context) <-chan error {
+		errc := make(chan error, 1)
+		go func() { errc <- h.c.WaitRestart(ctx) }()
+		return errc
+	}
+	t.Run("no restart, or one to come: it goes on at once", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		if done, err := returned(wait(h, t.Context())); !done || err != nil {
+			t.Fatalf("with no restart: %t, %v; want at once, nil", done, err)
+		}
+		h.write(CalibreWeb)
+		if done, err := returned(wait(h, t.Context())); !done || err != nil {
+			t.Fatalf("with a restart to come: %t, %v; want at once, nil", done, err)
+		}
+		h.expect(0, 0)
+	})
+	t.Run("a restart under way: it waits for the new calibre-server", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		h.write(CalibreWeb)
+		h.clk.Advance(6 * time.Second)
+		h.expect(0, 1)
+		errc := wait(h, t.Context())
+		if done, _ := returned(errc); done {
+			t.Fatal("WaitRestart returned during the restart")
+		}
+		h.restarted()
+		if done, err := returned(errc); !done || err != nil {
+			t.Fatalf("once the new calibre-server takes connections: %t, %v; want nil", done, err)
+		}
+		h.expect(0, 1)
+	})
+	t.Run("the client gone: it returns the context's error", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.running()
+		h.write(CalibreWeb)
+		h.clk.Advance(6 * time.Second)
+		ctx, cancel := context.WithCancel(t.Context())
+		errc := wait(h, ctx)
+		cancel()
+		if done, err := returned(errc); !done || err == nil {
+			t.Fatalf("WaitRestart returned %t, %v; want the context's error", done, err)
+		}
+	})
+}
