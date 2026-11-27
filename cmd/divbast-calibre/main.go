@@ -157,8 +157,8 @@ func freshDir(dir string, logw io.Writer) error {
 	fi, err := os.Lstat(dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		if err := os.Mkdir(dir, 0o700); err != nil {
-			return fmt.Errorf("making %s failed: %w", dir, err)
+		if merr := os.Mkdir(dir, 0o700); merr != nil {
+			return fmt.Errorf("making %s failed: %w", dir, merr)
 		}
 		return nil
 	case err != nil:
@@ -188,7 +188,7 @@ func freshDir(dir string, logw io.Writer) error {
 	default:
 		say(logw, "calibre-server's temporary files: %s and %d more stay: %v: %s", stuck[0], len(stuck)-1, stuckErr, firststart.GiveHint(dir))
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // G302: a directory, which its owner must be able to enter
 		say(logw, "calibre-server's temporary files: the mode of %s stays %s: %v: %s", dir, fi.Mode().Perm(), err, firststart.GiveHint(dir))
 	}
 	return firststart.Writable(dir)
