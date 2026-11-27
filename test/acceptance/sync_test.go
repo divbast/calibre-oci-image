@@ -599,10 +599,10 @@ const downloadsFor = 12 * time.Second
 // TestReadsAfterEdit reads a book through Calibre-Web right after a title
 // edit there, with the library open in calibre-server, as any use of the
 // Content Server leaves it. Calibre-Web reads a book's file through
-// calibre-server, which PID 1 holds such a read for, and restarts at once,
-// so that calibre-server reads the library as it is: every download, from
-// the first, has the new title written in, and none is refused or
-// missing; and a KEPUB conversion, which reads the book that way first,
+// calibre-server, by calibredb's export, which PID 1 holds for a restart
+// that it brings forward, so that calibre-server reads the library as it
+// is: every download, from the first, has the new title written in, and
+// none is refused or missing. A KEPUB conversion right after an edit
 // works.
 func TestReadsAfterEdit(t *testing.T) {
 	t.Parallel()
@@ -644,6 +644,10 @@ func TestReadsAfterEdit(t *testing.T) {
 		}
 		const title = "Edited Before A Conversion"
 		editTitle(tb, b.web, 2, title)
+		// Only that the conversion works: a conversion may carry the
+		// book's metadata from before the edit, since PID 1 does not hold
+		// calibredb's show_metadata, which Calibre's own conversions read
+		// first. A KEPUB's reads through export are held as a download's
 		if err := b.web.convert(ctx, 2, "EPUB", "KEPUB"); err != nil {
 			tb.Fatal(err)
 		}
