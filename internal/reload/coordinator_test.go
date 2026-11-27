@@ -1258,6 +1258,63 @@ func TestWrapperCountsForCalibreWeb(t *testing.T) {
 	}
 }
 
+// TestWrapperReadNotAnEdit is a read of Calibre-Web's own calibredb, a
+// download, with no edit in Calibre-Web, and then a change it cannot be
+// the cause of. An edit through 8080, while the read is open or within
+// 10 s after it, inside or outside calibre-server's own start, is
+// calibre-server's alone: Calibre-Web reconnects once, calibre-server is
+// not restarted after its own edit, and the next 8080 edit is not
+// refused. A change no request made, outside any start, still reloads
+// both.
+func TestWrapperReadNotAnEdit(t *testing.T) {
+	t.Parallel()
+	edit := func(h *harness) {
+		h.write(ContentServer)
+		if deny, _, why := h.c.Gate(ContentServer, http.MethodPost, "/cdb/set-fields/13"); deny {
+			h.t.Errorf("the next edit through 8080 was refused: %q", why)
+		}
+	}
+	cases := []struct {
+		name                string
+		steps               func(h *harness)
+		reconnects, restart int
+	}{
+		{"an edit through 8080, 3 s after the read", func(h *harness) {
+			h.c.WrapperStarted()()
+			h.clk.Advance(3 * time.Second)
+			edit(h)
+		}, 1, 0},
+		{"an edit through 8080 while the read is open", func(h *harness) {
+			done := h.c.WrapperStarted()
+			h.clk.Advance(time.Second)
+			edit(h)
+			done()
+		}, 1, 0},
+		{"an edit through 8080 in calibre-server's own start", func(h *harness) {
+			h.c.Accepting(ContentServer, h.c.Started(ContentServer))
+			h.clk.Advance(time.Second)
+			h.c.WrapperStarted()()
+			h.clk.Advance(time.Second)
+			edit(h)
+		}, 1, 0},
+		{"a change no request made, outside any start", func(h *harness) {
+			h.c.WrapperStarted()()
+			h.clk.Advance(3 * time.Second)
+			h.change()
+		}, 1, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			h.running()
+			tc.steps(h)
+			h.clk.Advance(time.Minute)
+			h.expect(tc.reconnects, tc.restart)
+		})
+	}
+}
+
 // TestHoldPaced is a run of Calibre-Web's reads, each after a change, as
 // in a Kobo's first sync: the first read restarts calibre-server at once;
 // the next, held 1 s apart, bring no second restart until Quiet after the

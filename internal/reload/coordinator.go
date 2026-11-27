@@ -102,7 +102,10 @@ type Options struct {
 // app is starting, or being reloaded, the change is that app's own, and
 // reloads nothing: an app's own start lasts until Window after its port
 // first accepts a connection, and Calibre-Web's reconnect until Window
-// after it ends. Otherwise both apps are reloaded. A start, or a reload,
+// after it ends; but a change in calibre-server's own start that a read
+// of Calibre-Web's own calibredb, open or ended at most Window before,
+// can be the cause of is Calibre-Web's (see WrapperStarted). Otherwise
+// both apps are reloaded. A start, or a reload,
 // reads the library as it is when it begins: within its own time, a write
 // the other app ended before then no longer counts, and a start drops a
 // reload of that app still to come.
@@ -133,6 +136,8 @@ type Coordinator struct {
 	since        [2]time.Time  // when each app's reload was first called for
 	quietAt      time.Time     // when the library will have gone Quiet long unchanged
 	quiet        bool          // it has, since the last change
+	reads        int           // the requests of Calibre-Web's own calibredb open
+	readAt       time.Time     // when the last of those ended
 	restarting   bool          // from a restart's call until the port accepts again
 	restartFrom  int           // calibre-server's starts when the restart was called
 	reconnecting bool          // a reconnect is under way
@@ -201,7 +206,7 @@ func (c *Coordinator) Stop() {
 }
 
 // Hold is for a request to the Content Server that Calibre-Web's own
-// calibredb makes, to read a book's file or its metadata for Calibre-Web:
+// calibredb makes, to export a book's file for Calibre-Web:
 // it returns once calibre-server reads the library as it is, or at once
 // when the request can go on as it is. Calibre-Web reads the library
 // itself, and would otherwise be given the book as calibre-server last
@@ -250,13 +255,13 @@ func (c *Coordinator) Hold(ctx context.Context) error {
 	}
 }
 
-// WaitRestart is for any other request to the Content Server from inside
-// the container: while a restart of calibre-server runs, it returns once
-// the new calibre-server takes connections, so the request waits rather
-// than being refused, and it returns at once otherwise. calibredb's first
-// request of a call carries no login yet, so Hold cannot know it; only the
-// image's own tools reach the Content Server from inside. It returns
-// ctx's error when ctx ends first, and nil when the Coordinator stops.
+// WaitRestart is for any other request to the Content Server from the
+// loopback: while a restart of calibre-server runs, it returns once the
+// new calibre-server takes connections, so the request waits rather than
+// being refused, and it returns at once otherwise. calibredb's first
+// request of a call carries no login yet, so Hold cannot know it. It
+// returns ctx's error when ctx ends first, and nil when the Coordinator
+// stops.
 func (c *Coordinator) WaitRestart(ctx context.Context) error {
 	c.mu.Lock()
 	if c.stopped || !c.restarting {
@@ -319,21 +324,23 @@ func (c *Coordinator) RequestStarted(app App, method, path string) (done func(st
 // once the request is over. Calibre-Web reads a book that way before it
 // converts it, and writes the new format after, in the background, with
 // no request of its own open, as for each book of a Kobo's first sync.
-// So the request counts as one of Calibre-Web's that can change the
-// library: a change seen while it is open, or Window after it, is put
-// down to Calibre-Web, even within calibre-server's own start.
+// So a change seen while the request is open, or Window after it, that
+// no request of either app can be the cause of, and that falls in
+// calibre-server's own start, is put down to Calibre-Web, not to that
+// start: it restarts calibre-server. The request counts for nothing else:
+// a change that a request to the Content Server can be the cause of is
+// never put down to Calibre-Web for it.
 func (c *Coordinator) WrapperStarted() (done func()) {
 	c.mu.Lock()
-	a := &c.apps[CalibreWeb]
-	a.writes++
+	c.reads++
 	c.mu.Unlock()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			c.mu.Lock()
 			now := c.clk.Now()
-			a.writes--
-			a.wroteAt = now
+			c.reads--
+			c.readAt = now
 			acts := c.step(now)
 			c.mu.Unlock()
 			c.do(acts)
@@ -505,6 +512,10 @@ func (c *Coordinator) editors(at time.Time, own [2]bool) (set [2]bool) {
 		if !j.running && c.counts(ContentServer, j.doneAt, at, own) {
 			set[ContentServer] = true
 		}
+	}
+	if !set[ContentServer] && !set[CalibreWeb] && own[ContentServer] &&
+		(c.reads > 0 || c.counts(CalibreWeb, c.readAt, at, own)) {
+		set[CalibreWeb] = true // see WrapperStarted
 	}
 	return set
 }
