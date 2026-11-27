@@ -60,17 +60,20 @@ const byteOrderMark = '\uFEFF'
 // carriage return, \r, which ReadSecret leaves when a file ends in a lone
 // \r, or in more than one line end, since it takes off only one \n or
 // \r\n. Nothing is taken off quietly, so that a password is never one
-// the user did not mean. variable names where the password came from. The
-// error is one line that names variable and what the password holds, and
-// never the password.
+// the user did not mean. variable names where the password came from: a
+// name that ends in _FILE is a file's, from which ReadSecret takes off
+// one line end, and only then does the error say so. The error is one line that
+// names variable and what the password holds, and never the password.
 func CheckHidden(variable, value string) error {
 	switch {
 	case strings.HasPrefix(value, string(byteOrderMark)):
 		return fmt.Errorf("%s: the password starts with a byte-order mark (U+FEFF), which some editors write at the start of a file: save the password without it", variable)
 	case strings.ContainsRune(value, byteOrderMark):
 		return fmt.Errorf("%s: the password holds a byte-order mark (U+FEFF), which no password may hold", variable)
+	case strings.ContainsRune(value, '\r') && strings.HasSuffix(variable, "_FILE"):
+		return fmt.Errorf("%s: the password holds a carriage return (\\r): only the one \\n or \\r\\n that may end the file is taken off, and no password may hold one", variable)
 	case strings.ContainsRune(value, '\r'):
-		return fmt.Errorf("%s: the password holds a carriage return (\\r): only the one \\n or \\r\\n that may end a file is taken off, and no password may hold one", variable)
+		return fmt.Errorf("%s: the password holds a carriage return (\\r), which no password may hold", variable)
 	}
 	return nil
 }

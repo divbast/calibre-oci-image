@@ -194,6 +194,36 @@ func TestCheckHidden(t *testing.T) {
 	}
 }
 
+// TestCheckHiddenLineEnd is a carriage return in a password from each
+// source. For one from a _FILE, the error says that only the one \n or
+// \r\n that may end the file is taken off. For one from the variable
+// itself, where nothing is taken off, it says nothing of that.
+func TestCheckHiddenLineEnd(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		variable string
+		file     bool
+	}{
+		{"PW_VAR", false},
+		{"PW_VAR_FILE", true},
+	} {
+		t.Run(tt.variable, func(t *testing.T) {
+			t.Parallel()
+			err := CheckHidden(tt.variable, "Abcd\refg1!")
+			if err == nil {
+				t.Fatal("CheckHidden() = nil, want an error")
+			}
+			msg := err.Error()
+			if want := tt.variable + ": the password holds a carriage return"; !strings.HasPrefix(msg, want) {
+				t.Errorf("CheckHidden() = %q, want it to begin %q", msg, want)
+			}
+			if got := strings.Contains(msg, "taken off"); got != tt.file {
+				t.Errorf("CheckHidden() = %q; it says what is taken off: %t, want %t", msg, got, tt.file)
+			}
+		})
+	}
+}
+
 // TestCheckCalibrePassword refuses a character of each kind Calibre's
 // Content Server refuses in a password: control characters, invisible
 // formatting characters, and line and paragraph separators. Calibre's
