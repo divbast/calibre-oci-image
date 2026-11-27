@@ -17,12 +17,13 @@ on:
     # The daily slot, and the only automatic publish: it publishes main when
     # main moved since the commit the published :latest was built from, so
     # users see at most one new image a day however many merges land. It
-    # also checks whether something outside this repository has changed:
-    # the runner images, or the advisory database the scan reads, so a
-    # new advisory against the pinned image shows within a day rather than
-    # a week. 22:47 UTC is 09:47 in Melbourne under daylight saving, 08:47
-    # outside it: 80 minutes after the SABnzbd image's slot, so the two
-    # images' runs do not share the organisation's 20 concurrent jobs.
+    # also checks whether something outside this repository has changed: the
+    # runner images, or the advisory database the scan reads, so a new
+    # advisory against the pinned image shows within a day rather than a
+    # week. 22:47 UTC is 09:47 in Melbourne under daylight saving, 08:47
+    # outside it: 80 minutes after the SABnzbd image's slot. GitHub starts
+    # scheduled runs late and in batches, so runs set apart this way are
+    # less likely to start together.
     - cron: '47 22 * * *'
   # The button: run from main, it publishes now, for an urgent fix.
   workflow_dispatch:
