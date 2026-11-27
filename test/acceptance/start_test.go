@@ -107,7 +107,7 @@ func TestRefusesWeakPassword(t *testing.T) {
 // as files: /books gets a library, both admins log in with their
 // passwords, and Calibre-Web's own default password does not work. No
 // app's environment holds a password variable, and no process's command
-// line holds a password.
+// line holds a password, the internal user's included.
 func TestFirstStart(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
@@ -115,7 +115,8 @@ func TestFirstStart(t *testing.T) {
 	ctx := tb.Context()
 	sec := newSecrets(tb)
 	st := newStore(tb, e)
-	s := (&launch{env: sec.env(), mounts: append(st.mounts(), sec.mount()), passwords: sec.all()}).serve(tb, e, image)
+	l := &launch{env: sec.env(), mounts: append(st.mounts(), sec.mount()), passwords: sec.all()}
+	s := l.serve(tb, e, image)
 	checks := harness.NewChecks(tb)
 
 	made, err := isFile(ctx, s.C, booksDir+"/metadata.db")
@@ -157,20 +158,22 @@ func TestFirstStart(t *testing.T) {
 	for i := range ps {
 		argv.WriteString(strings.Join(ps[i].Argv, "\x00") + "\n")
 	}
-	noPassword(checks, "the command line of each of the "+strconv.Itoa(len(ps))+" processes", argv.String(), sec.all())
+	noPassword(checks, "the command line of each of the "+strconv.Itoa(len(ps))+" processes", argv.String(), append(sec.all(), l.internal))
 }
 
 // firstThenStop serves the image on new volumes, with new passwords, and
-// returns the volumes and the passwords once it has stopped, with exit 0.
-func firstThenStop(r *redactor, e harness.Engine, image string) (*store, *secrets) {
+// returns the volumes, the passwords, and the internal user's password
+// that the first start made, once it has stopped, with exit 0.
+func firstThenStop(r *redactor, e harness.Engine, image string) (st *store, sec *secrets, internal string) {
 	r.Helper()
-	sec := newSecrets(r)
-	st := newStore(r, e)
-	first := (&launch{env: sec.env(), mounts: append(st.mounts(), sec.mount()), passwords: sec.all()}).serve(r, e, image)
+	sec = newSecrets(r)
+	st = newStore(r, e)
+	l := &launch{env: sec.env(), mounts: append(st.mounts(), sec.mount()), passwords: sec.all()}
+	first := l.serve(r, e, image)
 	if _, code := stop(r, e, first.C); code != 0 {
 		r.Fatalf("the first start exits %d when stopped", code)
 	}
-	return st, sec
+	return st, sec, l.internal
 }
 
 // TestRestartKeepsAccounts is a second start on the volumes of a first,
@@ -181,7 +184,7 @@ func TestRestartKeepsAccounts(t *testing.T) {
 	e, image := underTest(t)
 	tb := redacting(t)
 	ctx := tb.Context()
-	st, sec := firstThenStop(tb, e, image)
+	st, sec, _ := firstThenStop(tb, e, image)
 
 	s := (&launch{mounts: st.mounts(), passwords: sec.all()}).serve(tb, e, image)
 	resp, err := serverAdmin(ctx, s, sec.admin, "/ajax/library-info")
@@ -328,11 +331,11 @@ func TestServeFailsCleanly(t *testing.T) {
 	t.Run("a broken app.db", func(t *testing.T) {
 		t.Parallel()
 		tb := redacting(t)
-		st, sec := firstThenStop(tb, e, image)
+		st, sec, internal := firstThenStop(tb, e, image)
 		rootPython(tb, e, image, breakAppDB, []harness.Mount{st.config})
 		before := tree(tb, e, image, st)
 		r := (&launch{mounts: st.mounts(), passwords: sec.all()}).refuse(tb, e, image)
-		refused(tb, r, sec.all(), "/config/calibre-web/app.db", "file is not a database")
+		refused(tb, r, append(sec.all(), internal), "/config/calibre-web/app.db", "file is not a database")
 		harness.Equal(harness.NewChecks(tb), "nothing in /books or /config changes, and nothing is left behind", before, tree(tb, e, image, st))
 	})
 

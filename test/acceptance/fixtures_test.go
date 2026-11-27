@@ -351,6 +351,7 @@ type launch struct {
 	network   string   // empty for one of its own
 	ip        string   // a fixed address on network, or empty
 	passwords []string // none of which its log may hold
+	internal  string   // the internal user's password, once serve has read it
 }
 
 // spec is l as the engine runs it: under the contract, with the health
@@ -371,32 +372,67 @@ func (l *launch) spec(e harness.Engine, image string) harness.RunSpec {
 // serve starts l with ports 8080 and 8083 published on the host's
 // loopback, and returns it once the shipped probe passes in it: both apps
 // answer. 8083 is the ServeSpec's health port, the second port Serve
-// publishes, so the Serving's Health copy sends to Calibre-Web. When the
-// test ends, its log must hold none of l's passwords.
-func (l *launch) serve(tb testing.TB, e harness.Engine, image string) *harness.Serving {
-	tb.Helper()
-	ctx := tb.Context()
+// publishes, so the Serving's Health copy sends to Calibre-Web. It then
+// reads the internal user's password, which first start made, into
+// l.internal, and r hides it from then on. When the test ends, the log
+// must hold none of l's passwords, nor the internal one.
+func (l *launch) serve(r *redactor, e harness.Engine, image string) *harness.Serving {
+	r.Helper()
+	ctx := r.Context()
 	spec := l.spec(e, image)
-	s, err := e.Serve(ctx, tb, &harness.ServeSpec{Run: spec, AppPort: appPort, HealthPort: webPort})
+	s, err := e.Serve(ctx, r, &harness.ServeSpec{Run: spec, AppPort: appPort, HealthPort: webPort})
 	if err != nil {
-		tb.Fatalf("serving %s: %v", image, err)
+		r.Fatalf("serving %s: %v", image, err)
 	}
-	watchLog(tb, s.C, l.passwords)
-	if err := waitHealthy(ctx, s.C); err != nil {
-		tb.Fatalf("the shipped probe never passed: %v", harness.WithLog(ctx, s.C, err))
+	watched := slices.Clone(l.passwords)
+	watchLog(r, s.C, &watched)
+	healthy := waitHealthy(ctx, s.C)
+	// Read before a failure prints the log, so that it is hidden there too
+	internal, ierr := internalPassword(ctx, s.C)
+	if ierr == nil {
+		r.hide(internal)
+		watched = append(watched, internal)
+		l.internal = internal
+	}
+	if healthy != nil {
+		r.Fatalf("the shipped probe never passed: %v", harness.WithLog(ctx, s.C, healthy))
+	}
+	if ierr != nil {
+		r.Fatalf("reading the internal user's password: %v", ierr)
 	}
 	return s
 }
 
-// watchLog checks, when the test ends, that c's log holds none of
-// passwords.
-func watchLog(tb testing.TB, c *harness.Container, passwords []string) {
+// internalPasswordPath is where first start writes the password of the
+// Content Server's internal user, calibre-web.
+const internalPasswordPath = configDir + "/calibre/internal-password"
+
+// readFileCode is Python that prints the file sys.argv[1] names, as it
+// is.
+const readFileCode = `import sys
+with open(sys.argv[1]) as f:
+    sys.stdout.write(f.read())
+`
+
+// internalPassword returns the internal user's password, as first start
+// wrote it in c. An empty one is an error: no log check would ever find
+// it, which would prove nothing.
+func internalPassword(ctx context.Context, c *harness.Container) (string, error) {
+	pw, err := inPython(ctx, c, readFileCode, internalPasswordPath)
+	if err == nil && pw == "" {
+		err = fmt.Errorf("%s is empty", internalPasswordPath)
+	}
+	return pw, err
+}
+
+// watchLog checks, when the test ends, that c's log holds none of the
+// passwords that *passwords then holds.
+func watchLog(tb testing.TB, c *harness.Container, passwords *[]string) {
 	tb.Helper()
-	pws := slices.Clone(passwords)
 	tb.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(tb.Context()), cleanupWithin)
 		defer cancel()
-		checkLog(ctx, tb, c, pws)
+		checkLog(ctx, tb, c, *passwords)
 	})
 }
 

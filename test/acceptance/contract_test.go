@@ -5,6 +5,7 @@ package acceptance
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -55,6 +56,7 @@ func TestContract(t *testing.T) {
 	tb := redacting(t)
 	sec := newSecrets(tb)
 	var ran *harness.Container // the container the contract checks
+	var internal string        // the internal user's password in it
 	contract.Run(t, &contract.Config{
 		Image:         image,
 		AppPort:       appPort,
@@ -79,13 +81,22 @@ func TestContract(t *testing.T) {
 		},
 		Ready: func(ctx context.Context, c *harness.Container) error {
 			ran = c
-			return waitHealthy(ctx, c)
+			if err := waitHealthy(ctx, c); err != nil {
+				return err
+			}
+			pw, err := internalPassword(ctx, c)
+			if err != nil {
+				return fmt.Errorf("reading the internal user's password: %w", err)
+			}
+			tb.hide(pw)
+			internal = pw
+			return nil
 		},
 	})
-	// Its container's log must hold neither password, as every other
-	// container's does
+	// Its container's log must hold none of the three passwords, as every
+	// other container's does
 	if ran == nil {
 		tb.Fatal("the contract never asked whether its container was ready")
 	}
-	checkLog(tb.Context(), tb, ran, sec.all())
+	checkLog(tb.Context(), tb, ran, append(sec.all(), internal))
 }
