@@ -4,7 +4,6 @@
 # Do not edit it: change the pins, then run go run ./cmd/divbast-pins again.
 a2b0e87f6b80790c929308ca0831d686f7a180feab684fe8cd4a4380bd96aaca https://files.pythonhosted.org/packages/00/ec/e61deec9bcfbb0e1b36f8b5ba75cb44644419b4bfd0fdd666bffd21d9579/cython-3.2.9-py3-none-any.whl
 ea0c9a0384df69ed86a943a15cde37d0360b82491b3910dc2215e202e62b5b02 https://files.pythonhosted.org/packages/01/f9/575c8d760eae1fc99651b7cc5efd96ad5379ca4d6b53750b0fb4fe983f34/imagesize-2.0.1-py3-none-any.whl
-d0013f540772d1420576855455d050a2180186c91c15779301ac2ccb3eeb68de https://files.pythonhosted.org/packages/02/10/5da547df7a391dcde17f59520a231527b8571e6f46fc8efb02ccb370ab12/docutils-0.22.4-py3-none-any.whl
 63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86 https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
 647ba99caddc2cc1e55a51e4360689115551bf4476d90e8162cf8c345fe233c7 https://files.pythonhosted.org/packages/04/54/6f679c435d28e0a568d8e8a7c0a93a09010818634c3c3907fc98d8983770/roman_numerals-4.1.0-py3-none-any.whl
 c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef https://files.pythonhosted.org/packages/04/96/92447566d16df59b2a776c0fb82dbc4d9e07cd95062562af01e408583fc4/itsdangerous-2.2.0-py3-none-any.whl
@@ -38,6 +37,7 @@ a5e246f79eb80475e691bf93862cead98decd8a498cf53ba0516fcdc0f50dc1c https://files.p
 1a1cc7ec146ad19d6f71941ee82aef3d31221700f0d8bf844136cf8df79d281a https://files.pythonhosted.org/packages/30/15/abe4af50f4be92b60c25e43c1c64d08453b51e46c32981d80b3aebec0260/wordninja-2.0.0.tar.gz
 8bb5376d2006950386f8c6427613334a2acadc5f559cb80e638d00b4df957e37 https://files.pythonhosted.org/packages/31/7d/164b7ffc8624fe9efb4221bf9af485d5c1e41b9ae118045d2b6dc5457d8b/click-8.5.1-py3-none-any.whl
 a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0 https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl
+25d013af9bf23bc1c7b2b093dff4208166c53a94786c9e447808335ef1185fea https://files.pythonhosted.org/packages/32/91/30151a39f7570f448ed84529390628a651d7f27c87d73c9b887f8189695e/docutils-0.23-py3-none-any.whl
 e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1 https://files.pythonhosted.org/packages/32/d1/a3652fe2c19134d0d15922177821d863cbd7e842d53a21bbe7e8e3a1b5ac/certifi-2026.10.23-py3-none-any.whl
 b2163a246c585894d808f18783e19137cb70a0c18fb36748dc01fc6f109c1646 https://files.pythonhosted.org/packages/33/24/033604d30f6cf82d661c0f9dfc2c71d52cafc2de516616f80d3b0600cb7c/pycountry-22.3.5.tar.gz
 046e1132c71fcf3330438a539928932caf51ddbc582496833e23de611de14562 https://files.pythonhosted.org/packages/33/55/af02708f230eb77084a299d7b08175cff006dea4f2721074b92cdb0296c0/ordered_set-4.1.0-py3-none-any.whl
