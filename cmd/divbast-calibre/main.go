@@ -135,6 +135,33 @@ var image = layout{config: "/config", books: "/books"}
 // calibre is the Content Server's config directory.
 func (l layout) calibre() string { return filepath.Join(l.config, "calibre") }
 
+// serverTmp is calibre-server's folder of temporary files. An upload
+// through 8080 leaves copies of the book there, and calibre-server
+// deletes them only when it ends, so they are kept off /tmp, which is held
+// in memory.
+func (l layout) serverTmp() string { return filepath.Join(l.calibre(), "tmp") }
+
+// freshDir makes dir an empty folder of its owner's alone, mode 0700: it
+// removes the folder and all it holds, then makes it again.
+func freshDir(dir string) error {
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("emptying %s failed: %w", dir, err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return fmt.Errorf("making %s failed: %w", dir, err)
+	}
+	return nil
+}
+
+// setEnv returns env with key set to value, in place of any value it had.
+func setEnv(env []string, key, value string) []string {
+	out := slices.DeleteFunc(slices.Clone(env), func(e string) bool {
+		k, _, _ := strings.Cut(e, "=")
+		return k == key
+	})
+	return append(out, key+"="+value)
+}
+
 // calibreWeb is Calibre-Web's config directory.
 func (l layout) calibreWeb() string { return filepath.Join(l.config, "calibre-web") }
 
@@ -269,7 +296,9 @@ func startApps(ctx context.Context, s *settings) int {
 	return max(code, <-ran)
 }
 
-// children are the two apps, each with env as its whole environment.
+// children are the two apps, each with env as its whole environment, but
+// that calibre-server keeps its temporary files in its own folder in
+// /config, which is emptied before each of its starts.
 func children(l layout, env []string) []supervise.Child {
 	return []supervise.Child{
 		{
@@ -278,7 +307,8 @@ func children(l layout, env []string) []supervise.Child {
 				"/opt/calibre/calibre-server", "--listen-on", "127.0.0.1", "--port", "18080", "--enable-auth",
 				"--userdb", filepath.Join(l.calibre(), firststart.UsersFile), "--disable-use-bonjour", l.books,
 			},
-			Env: env,
+			Env:    setEnv(env, "CALIBRE_TEMP_DIR", l.serverTmp()),
+			Before: func() error { return freshDir(l.serverTmp()) },
 		},
 		{
 			Name: reload.CalibreWeb.String(),

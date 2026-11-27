@@ -36,6 +36,11 @@ type Child struct {
 	// Env is the child's environment; nil means PID 1's own. Either way,
 	// the child never gets PasswordVariables.
 	Env []string
+	// Before, when set, runs before each start of the child: its first,
+	// and each after it ended, whether it crashed or was restarted on
+	// purpose. It never runs while the child runs. When it fails, the
+	// start fails, and is tried again as any failed start is.
+	Before func() error
 }
 
 // Options are the supervisor's times.
@@ -265,6 +270,16 @@ func (s *Supervisor) OnChange(f func(name string, state State)) {
 // which goes on with k's run rather than beginning one.
 func (s *Supervisor) launch(k *kid, keepRun bool) {
 	at := s.clk.Now()
+	if k.Before != nil {
+		if err := k.Before(); err != nil {
+			k.planned = false
+			s.setState(k, false, false)
+			s.answer(k, err)
+			s.logf("%s could not start: %v; trying again in %s", k.Name, err, k.delay)
+			s.backoff(k)
+			return
+		}
+	}
 	reap.begin()
 	p, err := s.start(k.Child)
 	if err != nil {

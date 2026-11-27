@@ -90,7 +90,7 @@ func TestServeBadTrustedProxies(t *testing.T) {
 // environment: PID 1's, without the password variables.
 func TestChildren(t *testing.T) {
 	t.Parallel()
-	env := withoutPasswords([]string{"PATH=/usr/bin", "CALIBRE_ADMIN_PASSWORD=x", "CALIBRE_ADMIN_PASSWORD_FILE=y", "CALIBRE_WEB_ADMIN_PASSWORD=z", "CALIBRE_WEB_ADMIN_PASSWORD_FILE=w", "HOME=/tmp"})
+	env := withoutPasswords([]string{"PATH=/usr/bin", "CALIBRE_ADMIN_PASSWORD=x", "CALIBRE_ADMIN_PASSWORD_FILE=y", "CALIBRE_WEB_ADMIN_PASSWORD=z", "CALIBRE_WEB_ADMIN_PASSWORD_FILE=w", "HOME=/tmp", "CALIBRE_TEMP_DIR=/tmp"})
 	want := []supervise.Child{
 		{Name: "calibre-server", Argv: []string{
 			"/opt/calibre/calibre-server", "--listen-on", "127.0.0.1", "--port", "18080", "--enable-auth",
@@ -114,8 +114,51 @@ func TestChildren(t *testing.T) {
 				t.Errorf("%s is started with %s", c.Name, a)
 			}
 		}
-		if names := envNames(c.Env); !slices.Equal(names, []string{"PATH", "HOME"}) {
-			t.Errorf("%s's environment holds %q, want PATH and HOME alone", c.Name, names)
+		if names := envNames(c.Env); !slices.Equal(names, []string{"PATH", "HOME", "CALIBRE_TEMP_DIR"}) {
+			t.Errorf("%s's environment holds %q, want PATH, HOME and CALIBRE_TEMP_DIR alone", c.Name, names)
+		}
+		// Only calibre-server keeps its temporary files in /config
+		temp, before := "/tmp", false
+		if c.Name == "calibre-server" {
+			temp, before = "/config/calibre/tmp", true
+		}
+		if !slices.Contains(c.Env, "CALIBRE_TEMP_DIR="+temp) {
+			t.Errorf("%s's CALIBRE_TEMP_DIR is not %s", c.Name, temp)
+		}
+		if (c.Before != nil) != before {
+			t.Errorf("%s has a Before: %t, want %t", c.Name, c.Before != nil, before)
+		}
+	}
+}
+
+// TestServerTmpFresh: calibre-server's Before leaves its folder of
+// temporary files there, empty, and its owner's alone, whatever it held,
+// and whether or not it was there.
+func TestServerTmpFresh(t *testing.T) {
+	t.Parallel()
+	l := layout{config: t.TempDir(), books: "/books"}
+	if err := os.Mkdir(l.calibre(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := children(l, nil)[0].Before
+	for _, held := range []bool{false, true} {
+		if held {
+			if err := os.MkdirAll(filepath.Join(l.serverTmp(), "srv-x"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(l.serverTmp(), "srv-x", "large.pdf"), []byte("a copy"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := before(); err != nil {
+			t.Fatalf("held %t: %v", held, err)
+		}
+		fi, err := os.Stat(l.serverTmp())
+		if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+			t.Fatalf("held %t: %s is %v, %v; want a folder, mode 0700", held, l.serverTmp(), fi, err)
+		}
+		if left, err := os.ReadDir(l.serverTmp()); err != nil || len(left) != 0 {
+			t.Errorf("held %t: %s holds %d entries: %v", held, l.serverTmp(), len(left), err)
 		}
 	}
 }

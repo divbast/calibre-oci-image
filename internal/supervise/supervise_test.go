@@ -4,9 +4,12 @@
 package supervise
 
 import (
+	"errors"
 	"io"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -515,5 +518,76 @@ func TestStartNeverPassesPasswords(t *testing.T) {
 			t.Fatal(err)
 		}
 		checkNoPasswords(t, c.how, env)
+	}
+}
+
+// TestBeforeEachStart: a child's Before runs before each of its starts,
+// the first, the one after it ended, and the one after a planned restart,
+// and only then.
+func TestBeforeEachStart(t *testing.T) {
+	t.Parallel()
+	h := newHelper(t, func(n int) string {
+		if n == 1 {
+			return "exit"
+		}
+		return "wait"
+	})
+	var seen []int // how many starts there were, at each Before
+	var mu sync.Mutex
+	before := func() error {
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, h.n) // the supervisor's goroutine, as h.start's
+		return nil
+	}
+	s, clk, _ := newTest(t, h, Child{Name: "a", Before: before})
+	r := runSupervisor(t, s)
+	nextStart(t, h)
+	clk.Advance(nextWait(t, clk))
+	nextStart(t, h)
+	if err := receive(t, restartAsync(s)); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	nextStart(t, h)
+	if code := r.stop(t); code != 0 {
+		t.Errorf("Run returned %d, want 0", code)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []int{0, 1, 2}; !slices.Equal(seen, want) {
+		t.Errorf("Before ran with %v starts made, want %v: once before each start", seen, want)
+	}
+}
+
+// TestBeforeFails: when Before fails, the start fails: the child is not
+// started, the log says why, and the start is tried again after the
+// wait, Before first.
+func TestBeforeFails(t *testing.T) {
+	t.Parallel()
+	h := newHelper(t, always("wait"))
+	calls := 0
+	before := func() error {
+		calls++
+		if calls == 1 {
+			return errors.New("the folder could not be emptied")
+		}
+		return nil
+	}
+	s, clk, logs := newTest(t, h, Child{Name: "a", Before: before})
+	r := runSupervisor(t, s)
+	if got := nextWait(t, clk); got != production.Min {
+		t.Fatalf("after Before failed: a wait of %s, want %s", got, production.Min)
+	}
+	expectNoStart(t, h)
+	clk.Advance(production.Min)
+	nextStart(t, h)
+	if code := r.stop(t); code != 0 {
+		t.Errorf("Run returned %d, want 0", code)
+	}
+	if line := "divbast-calibre: a could not start: the folder could not be emptied; trying again in 1s\n"; !strings.Contains(logs.String(), line) {
+		t.Errorf("the log has no line %q; it is:\n%s", line, logs)
+	}
+	if calls != 2 {
+		t.Errorf("Before ran %d times, want 2", calls)
 	}
 }
