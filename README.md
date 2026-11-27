@@ -419,9 +419,11 @@ the folder on first mount, so `-v calibre-books:/books` just works.
 - On an SELinux host, such as Fedora or RHEL, a bind mount also needs
   Podman to relabel it, or the container cannot use it: add `:Z`, as in
   `-v ./books:/books:Z`. `:Z` keeps the folder to this container alone.
-- With no mount at all, the read-only root refuses the first write, and
-  the start stops at once, exit 1, with the same line, ending in
-  `read-only file system`.
+- A `/books` or a `/config` mounted read-only, as `:ro` mounts it, or
+  with nothing mounted there, where it is part of the image's read-only
+  root, stops the start at once, exit 1, with one line naming the folder
+  and saying that it is on a read-only file system. No owner can write
+  there: mount a writable volume or folder at that path.
 
 ### A library from a desktop Calibre
 

@@ -257,9 +257,10 @@ or read in upstream's source where the line says so:
   3,900-point one fails to the generic cover. ImageMagick's own disk
   limit, from upstream's secure policy, is 2 GiB, as large as `/tmp`
 - No `/config` mount: exit 1 at once, `Calibre and Calibre-Web cannot
-  write /config: give it, and everything in it, to uid 65532, … : open
-  /config/.writable.…: read-only file system`; the same for `/books`. A
-  `/books/metadata.db` owned by uid 1000: `… cannot write
+  write /config: it is on a read-only file system: mount a writable volume
+  or folder there, not a read-only one: open /config/.writable.…:
+  read-only file system`; the same for `/books`, and for a `/books`
+  mounted `:ro`. A `/books/metadata.db` owned by uid 1000: `… cannot write
   /books/metadata.db: give /books, and everything in it, to uid 65532 …`
 - Calibre makes `CALIBRE_CONFIG_DIRECTORY` with mode 0755 when it is
   missing, so first start makes the two 0700 folders before any helper

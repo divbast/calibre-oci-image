@@ -205,6 +205,42 @@ func TestRefusesForeignOwnedBooks(t *testing.T) {
 	harness.Equal(harness.NewChecks(tb), "nothing is written to /config", "", strings.TrimSpace(out))
 }
 
+// TestRefusesReadOnly is a first start where a folder the image writes is
+// on a read-only file system: /books mounted with ro, or /config with
+// nothing mounted there, on the image's read-only root. The start exits 1
+// within a minute, with one line that names the folder and says to mount
+// a writable one there, and no chown hint, which cannot help there.
+func TestRefusesReadOnly(t *testing.T) {
+	t.Parallel()
+	e, image := underTest(t)
+	cases := []struct {
+		name, dir string
+		mounts    func(tb testing.TB) []harness.Mount
+	}{
+		{"/books mounted read-only", booksDir, func(tb testing.TB) []harness.Mount {
+			tb.Helper()
+			st := newStore(tb, e)
+			st.books.ReadOnly = true
+			return st.mounts()
+		}},
+		{"nothing mounted at /config", configDir, func(tb testing.TB) []harness.Mount {
+			tb.Helper()
+			return []harness.Mount{volume(tb, e, booksDir)}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tb := redacting(t)
+			sec := newSecrets(tb)
+			l := &launch{env: sec.env(), mounts: append(tc.mounts(tb), sec.mount()), passwords: sec.all()}
+			r := l.refuse(tb, e, image)
+			refused(tb, r, sec.all(), "cannot write "+tc.dir+": it is on a read-only file system", "mount a writable volume or folder there")
+			harness.NewChecks(tb).True("the line gives no chown hint", !strings.Contains(r.stderr, "chown"), harness.Clip(r.stderr))
+		})
+	}
+}
+
 // TestExistingLibrary is the same library once given to uid 65532, as the
 // refusal says: the first start keeps it, and both apps serve its book.
 func TestExistingLibrary(t *testing.T) {

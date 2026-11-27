@@ -4,10 +4,13 @@
 package firststart
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -39,6 +42,62 @@ func TestWritable(t *testing.T) {
 	if err != nil && strings.Contains(err.Error(), "\n") {
 		t.Errorf("Writable() = %q, want one line", err)
 	}
+}
+
+// The advice for a directory, and for a file, on a read-only file system.
+const (
+	mountDirWritable  = "mount a writable volume or folder there, not a read-only one"
+	mountFileWritable = "mount it writable, not read-only"
+)
+
+// checkReadOnly checks that err is the one line for path on a read-only
+// file system: it names path, gives fix, the advice to mount it writable,
+// and gives no chown hint, which cannot make a read-only file system
+// writable.
+func checkReadOnly(t *testing.T, err error, path, fix string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("no error for %s on a read-only file system", path)
+	}
+	msg := err.Error()
+	for _, want := range []string{"cannot write " + path + ": it is on a read-only file system: " + fix + ": "} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the error %q does not say %q", msg, want)
+		}
+	}
+	if strings.Contains(msg, "chown") || strings.Contains(msg, "\n") {
+		t.Errorf("the error %q gives a chown hint, or is more than one line", msg)
+	}
+}
+
+// TestCannotWriteReadOnly is the error for a directory, and for a file in
+// it, on a read-only file system, as a mount with ro is, or the image's
+// own root with nothing mounted there: it says to mount it writable, and
+// never to give it to the user. Any other error still says how to give it.
+func TestCannotWriteReadOnly(t *testing.T) {
+	t.Parallel()
+	erofs := func(path string) error { return &fs.PathError{Op: "open", Path: path, Err: syscall.EROFS} }
+	checkReadOnly(t, cannotWrite("/books", "", erofs("/books/.writable.1")), "/books", mountDirWritable)
+	checkReadOnly(t, cannotWrite("/books/metadata.db", "/books", erofs("/books/metadata.db")), "/books/metadata.db", mountFileWritable)
+	err := cannotWrite("/books", "", &fs.PathError{Op: "open", Path: "/books/.writable.1", Err: syscall.EACCES})
+	if err == nil || !strings.Contains(err.Error(), "chown -R") || !errors.Is(err, syscall.EACCES) {
+		t.Errorf("a directory the user cannot write: %v, want the chown hint and the cause", err)
+	}
+}
+
+// TestWritableReadOnlyRoot is Writable on a read-only file system where
+// the platform has one the test can use: macOS's root is one.
+func TestWritableReadOnlyRoot(t *testing.T) {
+	t.Parallel()
+	f, err := os.CreateTemp("/", ".writable.*")
+	if err == nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+	}
+	if !errors.Is(err, syscall.EROFS) {
+		t.Skipf("/ is not a read-only file system here: %v", err)
+	}
+	checkReadOnly(t, Writable("/"), "/", mountDirWritable)
 }
 
 // TestWritableFiles opens each file named that is there for appending, as

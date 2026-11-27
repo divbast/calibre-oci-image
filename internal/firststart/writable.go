@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // Writable returns nil when the running user can write dir, and each of
@@ -19,10 +20,9 @@ import (
 // and saying how to give it to the user, where Calibre or Calibre-Web
 // would stop later with a traceback.
 func Writable(dir string, files ...string) error {
-	fix := GiveHint
 	tmp, err := os.CreateTemp(dir, ".writable.*")
 	if err != nil {
-		return fmt.Errorf("Calibre and Calibre-Web cannot write %s: %s: %w", dir, fix("it"), err) //nolint:staticcheck // ST1005: the sentence starts with the apps' names
+		return cannotWrite(dir, "", err)
 	}
 	if cerr := errors.Join(tmp.Close(), os.Remove(tmp.Name())); cerr != nil {
 		return cerr
@@ -34,13 +34,34 @@ func Writable(dir string, files ...string) error {
 		case errors.Is(ferr, fs.ErrNotExist):
 			continue
 		case ferr != nil:
-			return fmt.Errorf("Calibre and Calibre-Web cannot write %s: %s: %w", path, fix(dir), ferr) //nolint:staticcheck // ST1005: the sentence starts with the apps' names
+			return cannotWrite(path, dir, ferr)
 		}
 		if cerr := f.Close(); cerr != nil {
 			return cerr
 		}
 	}
 	return nil
+}
+
+// cannotWrite is the error for path, which the running user cannot write,
+// as err says. dir is the directory that holds path, or "" when path is a
+// directory itself. On a read-only file system, which a mount with ro is,
+// and the image's own root where nothing is mounted, no owner can write,
+// so it says to mount it writable. Otherwise it says how to give the
+// directory to the user.
+func cannotWrite(path, dir string, err error) error {
+	if errors.Is(err, syscall.EROFS) {
+		fix := "mount a writable volume or folder there, not a read-only one"
+		if dir != "" {
+			fix = "mount it writable, not read-only"
+		}
+		return fmt.Errorf("Calibre and Calibre-Web cannot write %s: it is on a read-only file system: %s: %w", path, fix, err) //nolint:staticcheck // ST1005: the sentence starts with the apps' names
+	}
+	what := "it"
+	if dir != "" {
+		what = dir
+	}
+	return fmt.Errorf("Calibre and Calibre-Web cannot write %s: %s: %w", path, GiveHint(what), err) //nolint:staticcheck // ST1005: the sentence starts with the apps' names
 }
 
 // GiveHint says how to give what, a directory, to the running user: the
