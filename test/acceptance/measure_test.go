@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -518,55 +517,6 @@ func waitAfterServerChange(tb testing.TB, b *both, pid int) int {
 	return pid
 }
 
-// TestMeasureDownloadAfterEdit has calibre-server open the library, with
-// a read through 8080, as any use of the Content Server or a download
-// from Calibre-Web does; then edits a title in Calibre-Web, and asks
-// Calibre-Web for the book every half second. It records what each answer
-// was, until the download has the new title written in. Calibre-Web reads
-// the file, with its metadata written in, through calibre-server, which
-// knows of the edit only once PID 1 has restarted it.
-func TestMeasureDownloadAfterEdit(t *testing.T) { //nolint:paralleltest // measured alone, so that no other test's containers change its numbers
-	e, image := underTest(t)
-	tb := redacting(t)
-	ctx := tb.Context()
-	b := serveBooks(tb, e, image, titled("Download Book", 1), nil)
-	pid, err := appPID(ctx, b.s.C, contentServer)
-	if err != nil {
-		tb.Fatal(err)
-	}
-	if err = serverShows(ctx, b.srv, 1, "Download Book 1"); err != nil {
-		tb.Fatal(err)
-	}
-	const title = "Edited Before A Download"
-	editTitle(tb, b.web, 1, title)
-	edited := time.Now()
-	var seen []string
-	last := ""
-	err = within(ctx, seenWithin, func(ctx context.Context) error {
-		resp, gerr := b.web.get(ctx, "/download/1/epub/book", nil)
-		got := fmt.Sprint(gerr)
-		if gerr == nil {
-			got = strconv.Itoa(resp.Status)
-			if resp.Status == http.StatusOK {
-				t, terr := epubOPFTitle(resp.Body)
-				got = fmt.Sprintf("200 %q %v", t, terr)
-				if t == title {
-					seen = append(seen, fmt.Sprintf("%.2f s: %s", time.Since(edited).Seconds(), got))
-					return nil
-				}
-			}
-		}
-		if got != last {
-			seen = append(seen, fmt.Sprintf("%.2f s: %s", time.Since(edited).Seconds(), got))
-			last = got
-		}
-		return fmt.Errorf("the download is %s", got)
-	})
-	now, _ := appPID(ctx, b.s.C, contentServer)
-	tb.Logf("after an edit in Calibre-Web, its downloads were: %s (calibre-server PID %d, then %d): %v", strings.Join(seen, "; "), pid, now, err)
-	harness.NewChecks(tb).True("a download has the new title within a minute", err == nil, fmt.Sprint(err))
-}
-
 // TestMeasureComicUpload uploads the fixture comic to Calibre-Web twice
 // as a .cbr: as a RAR archive, its files stored as they are, and as a ZIP
 // archive, a CBZ renamed. It records what Calibre-Web made of each: the
@@ -656,12 +606,13 @@ func TestMeasureUploadLimits(t *testing.T) { //nolint:paralleltest // measured a
 }
 
 // tmpHoldersCode is Python that prints, as JSON, how much of /tmp is used,
-// each file under /tmp of a MiB or more, by size, and each file of a MiB
-// or more that a process holds open after it was deleted.
+// each file of a MiB or more under /tmp and calibre-server's own folder
+// of temporary files, by size, and each file of a MiB or more that a
+// process holds open after it was deleted.
 const tmpHoldersCode = `import json, os
 st = os.statvfs("/tmp")
 out = {"used": (st.f_blocks - st.f_bfree) * st.f_frsize, "files": {}, "deleted": {}}
-for root, dirs, files in os.walk("/tmp"):
+for root, dirs, files in [w for top in ("/tmp", "` + serverTmp + `") for w in os.walk(top)]:
     for f in files:
         p = os.path.join(root, f)
         try:
@@ -680,7 +631,7 @@ for d in os.listdir("/proc"):
     for fd in fds:
         try:
             target = os.readlink(f"/proc/{d}/fd/{fd}")
-            if target.startswith("/tmp/") and target.endswith(" (deleted)"):
+            if target.startswith(("/tmp/", "/config/")) and target.endswith(" (deleted)"):
                 size = os.stat(f"/proc/{d}/fd/{fd}").st_size
                 if size >= 1 << 20:
                     out["deleted"][f"{d}:{target}"] = size

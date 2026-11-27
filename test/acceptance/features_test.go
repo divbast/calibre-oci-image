@@ -14,6 +14,8 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,34 +23,40 @@ import (
 	"github.com/divbast/ci/harness"
 )
 
-// chromiumLog has Chromium, inside Calibre's QtWebEngine, log what it does
-// to stderr, which QtWebEngine always logs to. Qt turns the GPU off itself
-// only while QTWEBENGINE_CHROMIUM_FLAGS is unset: with the variable set,
-// and no --disable-gpu, Chromium aborts, finding no GL display.
-const chromiumLog = "--disable-gpu --enable-logging=stderr --v=1"
+// imageChromium are the Chromium flags the image's ENV sets: no GPU, no
+// namespace sandbox, and shared memory in /tmp, so that Calibre's PDF
+// output runs under rootless Podman as under Docker.
+const imageChromium = "--disable-gpu --disable-namespace-sandbox --disable-dev-shm-usage"
+
+// chromiumLog is the image's Chromium flags, and Chromium's own log, to
+// stderr, which QtWebEngine always logs to: a user's own value replaces
+// the image's, so it keeps the image's flags.
+const chromiumLog = imageChromium + " --enable-logging=stderr --v=1"
 
 // sandboxed is what Chromium logs when a page-drawing process starts under
 // its seccomp-bpf filter.
 const sandboxed = "Activated seccomp-bpf sandbox for process type: renderer"
 
 // jobLogCode is Python that reads, every 50 ms until the file sys.argv[1]
-// exists, each log file under /tmp, where calibre-server's worker writes
-// the stdout and stderr of a conversion while it runs, and prints the name
-// of the first that holds sys.argv[2]. calibre-server deletes a job's log
-// when the job works, and logs it only when it fails.
+// exists, each log file under /tmp and calibre-server's own temporary
+// folder, where its worker writes the stdout and stderr of a conversion
+// while it runs, and prints the name of the first that holds sys.argv[2].
+// calibre-server deletes a job's log when the job works, and logs it only
+// when it fails.
 const jobLogCode = `import os, sys, time
 stop, needle = sys.argv[1], sys.argv[2].encode()
 while not os.path.exists(stop):
-    for root, dirs, files in os.walk("/tmp"):
-        for f in files:
-            if f.endswith(".log"):
-                try:
-                    with open(os.path.join(root, f), "rb") as fh:
-                        if needle in fh.read(16 << 20):
-                            print(f)
-                            sys.exit(0)
-                except OSError:
-                    pass
+    for top in sys.argv[3:]:
+        for root, dirs, files in os.walk(top):
+            for f in files:
+                if f.endswith(".log"):
+                    try:
+                        with open(os.path.join(root, f), "rb") as fh:
+                            if needle in fh.read(16 << 20):
+                                print(f)
+                                sys.exit(0)
+                    except OSError:
+                        pass
     time.sleep(0.05)
 `
 
@@ -59,7 +67,7 @@ func jobLogHolds(tb testing.TB, c *harness.Container, needle string, do func()) 
 	stopAt := "/tmp/divbast-joblog-" + random(tb, 8, lower)
 	found := make(chan string, 1)
 	go func() {
-		out, err := inPython(context.WithoutCancel(tb.Context()), c, jobLogCode, stopAt, needle)
+		out, err := inPython(context.WithoutCancel(tb.Context()), c, jobLogCode, stopAt, needle, "/tmp", serverTmp)
 		if err != nil {
 			tb.Errorf("reading calibre-server's job logs: %v", err)
 		}
@@ -74,19 +82,29 @@ func jobLogHolds(tb testing.TB, c *harness.Container, needle string, do func()) 
 	return name != ""
 }
 
+// envIsCode is Python that prints whether the environment of the process
+// sys.argv[1] sets the variable sys.argv[2] to sys.argv[3], and nothing
+// of the value.
+const envIsCode = `import sys
+data = open(f"/proc/{sys.argv[1]}/environ", "rb").read().split(b"\0")
+print((sys.argv[2] + "=" + sys.argv[3]).encode() in data)
+`
+
 // TestPDFOutputSandboxed converts an EPUB to a PDF in the Content Server,
-// which draws the pages in QtWebEngine: the conversion works, and, with
-// Chromium's own log on, the conversion's log shows each page-drawing
-// process under Chromium's seccomp-bpf filter.
+// which draws the pages in QtWebEngine: as the image runs it, calibre-server
+// gets the image's Chromium flags and the conversion works; and with
+// Chromium's own log on as well, the conversion's log shows each
+// page-drawing process under Chromium's seccomp-bpf filter.
 func TestPDFOutputSandboxed(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
 	runs := []struct {
-		name string
-		env  map[string]string
+		name  string
+		env   map[string]string
+		flags string // what calibre-server's QTWEBENGINE_CHROMIUM_FLAGS must be
 	}{
-		{"as the image runs it", nil},
-		{"with Chromium's log on", map[string]string{"QTWEBENGINE_CHROMIUM_FLAGS": chromiumLog}},
+		{"as the image runs it", nil, imageChromium},
+		{"with Chromium's log on", map[string]string{"QTWEBENGINE_CHROMIUM_FLAGS": chromiumLog}, chromiumLog},
 	}
 	for _, r := range runs {
 		t.Run(r.name, func(t *testing.T) {
@@ -94,10 +112,15 @@ func TestPDFOutputSandboxed(t *testing.T) {
 			tb := redacting(t)
 			ctx := tb.Context()
 			b := serveBooks(tb, e, image, titled("PDF Book", 1), r.env)
-			var st conversion
-			var err error
-			logged := jobLogHolds(tb, b.s.C, sandboxed, func() { st, err = b.srv.convert(ctx, 1, "EPUB", "pdf", convertWithin) })
 			checks := harness.NewChecks(tb)
+			pid, err := appPID(ctx, b.s.C, contentServer)
+			if err != nil {
+				tb.Fatal(err)
+			}
+			out, err := inPython(ctx, b.s.C, envIsCode, strconv.Itoa(pid), "QTWEBENGINE_CHROMIUM_FLAGS", r.flags)
+			checks.True("calibre-server gets the Chromium flags "+r.flags, err == nil && strings.TrimSpace(out) == "True", fmt.Sprint(err))
+			var st conversion
+			logged := jobLogHolds(tb, b.s.C, sandboxed, func() { st, err = b.srv.convert(ctx, 1, "EPUB", "pdf", convertWithin) })
 			checks.True("the Content Server converts the EPUB to a PDF", err == nil && st.Fmt == "pdf", fmt.Sprintf("%q: %v", st.Fmt, err))
 			checks.True("the book has the PDF", serverHasFormat(ctx, b.srv, 1, "PDF") == nil, "")
 			if r.env != nil {
@@ -248,9 +271,9 @@ var errorLine = regexp.MustCompile(`(?m)^.*(\] ERROR \{|Traceback \(most recent 
 //     KEPUB, with kepubify;
 //   - an uploaded PDF's cover is its first page, through ImageMagick and
 //     Ghostscript, and not Calibre-Web's generic cover;
-//   - a comic's metadata is read from its ComicInfo.xml: a CBZ named .cbr,
-//     since Calibre-Web refuses the upload of a RAR archive, which the
-//     image's libmagic names application/vnd.rar;
+//   - a comic's metadata is read from the ComicInfo.xml of a CBR, a RAR
+//     archive, which the image's libmagic names application/vnd.rar, and
+//     the image's Calibre-Web takes;
 //   - the admin page has no update controls, and the database settings
 //     page no Google Drive, which the image does not install, with no
 //     error logged for either.
@@ -297,12 +320,12 @@ func TestCalibreWebFeatures(t *testing.T) {
 	generic, err := b.web.get(ctx, "/static/generic_cover.jpg", nil)
 	checks.True("and not the generic cover", err == nil && generic.Status == http.StatusOK && !bytes.Equal(cover, generic.Body), fmt.Sprint(err))
 
-	comic := cbz(comicFiles())
+	comic := cbr(comicFiles())
 	id, err = b.web.upload(ctx, "comic.cbr", bytes.NewReader(comic), int64(len(comic)))
 	if err != nil {
 		tb.Fatal(err)
 	}
-	bookShows(tb, b.web, "a comic book, .cbr", id, comicTitle, comicSeries, comicWriter)
+	bookShows(tb, b.web, "a comic book, a RAR archive", id, comicTitle, comicSeries, comicWriter)
 
 	before, err := b.s.C.Logs(ctx)
 	if err != nil {
@@ -334,6 +357,9 @@ func TestCalibreWebFeatures(t *testing.T) {
 	harness.Equal(checks, "Calibre-Web logs no error about Google Drive", "none", none(drive))
 }
 
+// serverTmp is calibre-server's own folder of temporary files.
+const serverTmp = "/config/calibre/tmp"
+
 // largeSize is the size of the large upload, 300 MiB: a large book, as
 // an upload to either port must work for one.
 const largeSize = 300 << 20
@@ -355,19 +381,25 @@ func pid1Peak(ctx context.Context, c *harness.Container) (int, error) {
 	return kib, err
 }
 
-// bookSizesCode is Python that prints, as JSON, the size of each file in
-// /books whose name ends with sys.argv[1].
-const bookSizesCode = `import json, os, sys
+// sizesCode is Python that prints, as JSON, the size of each file under
+// the folder sys.argv[1] whose name ends with sys.argv[2].
+const sizesCode = `import json, os, sys
 out = []
-for root, dirs, files in os.walk("/books"):
-    out += [os.path.getsize(os.path.join(root, f)) for f in files if f.endswith(sys.argv[1])]
+for root, dirs, files in os.walk(sys.argv[1]):
+    out += [os.path.getsize(os.path.join(root, f)) for f in files if f.endswith(sys.argv[2])]
 print(json.dumps(out))
 `
 
 // bookSizes returns the sizes of the files in c's /books whose name ends
 // with suffix.
 func bookSizes(ctx context.Context, c *harness.Container, suffix string) ([]int64, error) {
-	out, err := inPython(ctx, c, bookSizesCode, suffix)
+	return fileSizes(ctx, c, booksDir, suffix)
+}
+
+// fileSizes returns the sizes of the files under top in c whose name ends
+// with suffix.
+func fileSizes(ctx context.Context, c *harness.Container, top, suffix string) ([]int64, error) {
+	out, err := inPython(ctx, c, sizesCode, top, suffix)
 	if err != nil {
 		return nil, err
 	}
@@ -392,44 +424,97 @@ func (c *server) addBookFrom(ctx context.Context, name string, r io.Reader, size
 	return addedID(send(ctx, bigClient(), c.s.Base, http.MethodPost, path, h, r, size))
 }
 
+// tmpBound is the most /tmp may grow by while calibre-server takes an
+// upload: it keeps the copies of the file in its own folder, in /config.
+const tmpBound = 16 << 20
+
 // TestLargeUpload uploads a 300 MiB PDF to each port: each app takes it,
 // whole, into the library, and PID 1 streams it, never holding a third of
-// it in its memory. It logs how long the upload took, and the most /tmp
-// held meanwhile, as the image sizes /tmp for it.
+// it in its memory. On 8080, /tmp grows by under 16 MiB, calibre-server
+// keeps its copies of the file in its own folder in /config, a second
+// upload right after works, and once calibre-server has crashed and
+// started again the folder holds no file. Past calibre-server's limit, 8080 answers 413 with
+// calibre-server's own words, every time. It logs how long each upload
+// took, and the most /tmp held meanwhile.
 func TestLargeUpload(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	ports := []struct {
-		name   string
-		upload func(ctx context.Context, b *both, r io.Reader, size int64) (int, error)
-	}{
-		{"8080, the Content Server", func(ctx context.Context, b *both, r io.Reader, size int64) (int, error) {
-			return b.srv.addBookFrom(ctx, "large.pdf", r, size)
-		}},
-		{"8083, Calibre-Web", func(ctx context.Context, b *both, r io.Reader, size int64) (int, error) {
-			return b.web.upload(ctx, "large.pdf", r, size)
-		}},
-	}
-	for _, p := range ports {
-		t.Run(p.name, func(t *testing.T) {
-			t.Parallel()
-			tb := redacting(t)
-			ctx := tb.Context()
-			b := serveBooks(tb, e, image, titled("Large Book", 1), nil)
-			body, size := pdfPage(612, 792, pageRed, largeSize)
+	t.Run("8080, the Content Server", func(t *testing.T) {
+		t.Parallel()
+		tb := redacting(t)
+		ctx := tb.Context()
+		b := serveBooks(tb, e, image, titled("Large Book", 1), nil)
+		pid, err := appPID(ctx, b.s.C, contentServer)
+		if err != nil {
+			tb.Fatal(err)
+		}
+		checks := harness.NewChecks(tb)
+		var size int64
+		for _, n := range []string{"first", "second"} {
+			var body io.Reader
+			body, size = pdfPage(612, 792, pageRed, largeSize)
 			smp := startSampler(tb, b.s.C)
 			start := time.Now()
-			id, err := p.upload(ctx, b, body, size)
+			id, aerr := b.srv.addBookFrom(ctx, n+".pdf", body, size)
 			took := time.Since(start)
 			m := smp.stop(tb)
-			checks := harness.NewChecks(tb)
-			checks.True("the app takes the upload", err == nil && id > 0, fmt.Sprintf("book %d: %v", id, err))
-			sizes, err := bookSizes(ctx, b.s.C, ".pdf")
-			checks.True("the library holds the whole file", err == nil && len(sizes) == 1 && sizes[0] == size, fmt.Sprintf("%v, want [%d]: %v", sizes, size, err))
-			peak, err := pid1Peak(ctx, b.s.C)
-			checks.True(fmt.Sprintf("PID 1 never holds a third of the upload: under %d KiB", pid1Bound), err == nil && peak < pid1Bound, fmt.Sprintf("%d KiB: %v", peak, err))
-			tb.Logf("%d bytes uploaded in %s; /tmp held at most %s, from %s; PID 1 held at most %d KiB",
-				size, took.Round(time.Millisecond), mib(m.TmpPeak), mib(m.TmpBase), peak)
-		})
-	}
+			checks.True("8080 takes the "+n+" upload", aerr == nil && id > 0, fmt.Sprintf("book %d: %v", id, aerr))
+			checks.True(fmt.Sprintf("the %s upload grows /tmp by under %s", n, mib(tmpBound)), m.TmpPeak-m.TmpBase < tmpBound, mib(m.TmpPeak-m.TmpBase))
+			copies, cerr := fileSizes(ctx, b.s.C, serverTmp, ".pdf")
+			checks.True("calibre-server keeps its copies of the "+n+" upload in "+serverTmp, cerr == nil && slices.Contains(copies, size), fmt.Sprintf("%v: %v", copies, cerr))
+			tb.Logf("the %s upload, %d bytes, in %s; /tmp held at most %s, from %s; %s holds %d copies",
+				n, size, took.Round(time.Millisecond), mib(m.TmpPeak), mib(m.TmpBase), serverTmp, len(copies))
+		}
+		sizes, err := bookSizes(ctx, b.s.C, ".pdf")
+		checks.True("the library holds both files whole", err == nil && slices.Equal(sizes, []int64{size, size}), fmt.Sprintf("%v, want two of %d: %v", sizes, size, err))
+		peak, err := pid1Peak(ctx, b.s.C)
+		checks.True(fmt.Sprintf("PID 1 never holds a third of an upload: under %d KiB", pid1Bound), err == nil && peak < pid1Bound, fmt.Sprintf("%d KiB: %v", peak, err))
+		// A crash, after which calibre-server cannot delete its own files,
+		// as it does when it stops: PID 1 empties the folder before the
+		// next start. The new calibre-server makes folders of its own there
+		kill(tb, b.s.C, pid)
+		if _, err = waitNewPID(ctx, b.s.C, contentServer, pid); err != nil {
+			tb.Fatal(err)
+		}
+		if err = waitHealthy(ctx, b.s.C); err != nil {
+			tb.Fatal(err)
+		}
+		left, err := fileSizes(ctx, b.s.C, serverTmp, "")
+		checks.True("after calibre-server crashed and started again, "+serverTmp+" holds no file", err == nil && len(left) == 0, fmt.Sprintf("%d files: %v", len(left), err))
+	})
+	t.Run("8083, Calibre-Web", func(t *testing.T) {
+		t.Parallel()
+		tb := redacting(t)
+		ctx := tb.Context()
+		b := serveBooks(tb, e, image, titled("Large Book", 1), nil)
+		body, size := pdfPage(612, 792, pageRed, largeSize)
+		smp := startSampler(tb, b.s.C)
+		start := time.Now()
+		id, err := b.web.upload(ctx, "large.pdf", body, size)
+		took := time.Since(start)
+		m := smp.stop(tb)
+		checks := harness.NewChecks(tb)
+		checks.True("8083 takes the upload", err == nil && id > 0, fmt.Sprintf("book %d: %v", id, err))
+		sizes, err := bookSizes(ctx, b.s.C, ".pdf")
+		checks.True("the library holds the whole file", err == nil && len(sizes) == 1 && sizes[0] == size, fmt.Sprintf("%v, want [%d]: %v", sizes, size, err))
+		peak, err := pid1Peak(ctx, b.s.C)
+		checks.True(fmt.Sprintf("PID 1 never holds a third of the upload: under %d KiB", pid1Bound), err == nil && peak < pid1Bound, fmt.Sprintf("%d KiB: %v", peak, err))
+		tb.Logf("%d bytes uploaded in %s; /tmp held at most %s, from %s; PID 1 held at most %d KiB",
+			size, took.Round(time.Millisecond), mib(m.TmpPeak), mib(m.TmpBase), peak)
+	})
+	t.Run("8080, past calibre-server's limit", func(t *testing.T) {
+		t.Parallel()
+		tb := redacting(t)
+		ctx := tb.Context()
+		b := serveBooks(tb, e, image, titled("Limit Book", 1), nil)
+		const tries = 10
+		got := make([]string, 0, tries)
+		for range tries {
+			_, err := b.srv.addBookFrom(ctx, "limit.pdf", io.LimitReader(zeros{}, serverBodyLimit+1), serverBodyLimit+1)
+			got = append(got, fmt.Sprint(err))
+		}
+		want := fmt.Sprintf("the Content Server answered the add 413: %q", "The entity sent with the request exceeds the maximum allowed bytes (524288000).")
+		bad := slices.DeleteFunc(slices.Clone(got), func(s string) bool { return s == want })
+		harness.Equal(harness.NewChecks(tb), fmt.Sprintf("each of %d uploads of %d bytes gets 413 and calibre-server's words", tries, serverBodyLimit+1), "none", none(bad))
+	})
 }

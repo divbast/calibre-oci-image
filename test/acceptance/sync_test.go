@@ -590,3 +590,64 @@ func TestIdleReloadsNothing(t *testing.T) {
 		}
 	}
 }
+
+// downloadsFor is how long TestReadsAfterEdit keeps downloading after an
+// edit: past PID 1's 1 s look, its restart of calibre-server, and the
+// next second, when 8080 opens again.
+const downloadsFor = 12 * time.Second
+
+// TestReadsAfterEdit reads a book through Calibre-Web right after a title
+// edit there, with the library open in calibre-server, as any use of the
+// Content Server leaves it. Calibre-Web reads a book's file through
+// calibre-server, which PID 1 holds such a read for, and restarts at once,
+// so that calibre-server reads the library as it is: every download, from
+// the first, has the new title written in, and none is refused or
+// missing; and a KEPUB conversion, which reads the book that way first,
+// works.
+func TestReadsAfterEdit(t *testing.T) {
+	t.Parallel()
+	e, image := underTest(t)
+	t.Run("a download", func(t *testing.T) {
+		t.Parallel()
+		tb := redacting(t)
+		ctx := tb.Context()
+		b := serveBooks(tb, e, image, syncBooks, nil)
+		if err := serverShows(ctx, b.srv, 1, syncBooks[0].Title); err != nil {
+			tb.Fatal(err)
+		}
+		const title = "Edited Before A Download"
+		editTitle(tb, b.web, 1, title)
+		edited := time.Now()
+		var seen, bad []string
+		for time.Since(edited) < downloadsFor {
+			epub, err := b.web.download(ctx, 1, "EPUB")
+			got, terr := epubOPFTitle(epub)
+			at := fmt.Sprintf("%.2f s", time.Since(edited).Seconds())
+			if err != nil || terr != nil || got != title {
+				bad = append(bad, fmt.Sprintf("%s: %q, %v, %v", at, got, err, terr))
+			}
+			seen = append(seen, at)
+			if err := harness.Pause(ctx, 500*time.Millisecond); err != nil {
+				tb.Fatal(err)
+			}
+		}
+		tb.Logf("downloads at %s", strings.Join(seen, ", "))
+		harness.Equal(harness.NewChecks(tb), fmt.Sprintf("the downloads in the %s after the edit that lack the new title", downloadsFor), "none", none(bad))
+	})
+	t.Run("a KEPUB conversion", func(t *testing.T) {
+		t.Parallel()
+		tb := redacting(t)
+		ctx := tb.Context()
+		b := serveBooks(tb, e, image, syncBooks, nil)
+		if err := serverShows(ctx, b.srv, 2, syncBooks[1].Title); err != nil {
+			tb.Fatal(err)
+		}
+		const title = "Edited Before A Conversion"
+		editTitle(tb, b.web, 2, title)
+		if err := b.web.convert(ctx, 2, "EPUB", "KEPUB"); err != nil {
+			tb.Fatal(err)
+		}
+		err := within(ctx, convertWithin, func(ctx context.Context) error { return webHasFormat(ctx, b.web, 2, "KEPUB") })
+		harness.NewChecks(tb).True("Calibre-Web converts the book to KEPUB right after its edit", err == nil, fmt.Sprint(err))
+	})
+}
