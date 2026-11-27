@@ -4,7 +4,7 @@
 package acceptance
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -77,20 +77,31 @@ func qtWebEngineVersion(tb testing.TB, e harness.Engine, img string) string {
 const drawing = "Rendering 1 HTML files"
 
 // chromiumLine is a line of Chromium's own log, which it writes to the
-// same log when its log is on: "[pid:tid:date/time:LEVEL:file(line)] …".
-var chromiumLine = regexp.MustCompile(`^\[\d+:\d+:\d{4}/\d{6}\.\d{6}:[A-Z0-9_]+:[^\]]*\] `)
+// same log when its log is on: "[pid:tid:date/time:LEVEL:file(line)] …",
+// its level in the first group.
+var chromiumLine = regexp.MustCompile(`^\[\d+:\d+:\d{4}/\d{6}\.\d{6}:([A-Z0-9_]+):[^\]]*\] `)
+
+// chromiumNotFatal reports whether line is one of Chromium's own log lines
+// at any level but FATAL. A FATAL line is Chromium stopping a process on
+// purpose, which may itself be why the worker ended, so it is never passed
+// over.
+func chromiumNotFatal(line string) bool {
+	m := chromiumLine.FindStringSubmatch(line)
+	return len(m) == 2 && m[1] != "FATAL"
+}
 
 // diedDrawing reports whether a failed conversion's log and traceback, as
 // the Content Server answers them, show Calibre's PDF worker ending as
 // Chromium started to draw the pages: the last line of the log that is
-// not Chromium's own is drawing, and the traceback is calibre-server's
+// not one of Chromium's own, FATAL lines excepted, is drawing, and the
+// traceback is calibre-server's
 // end of its connection to the worker, reading EOFError, because the
 // worker ended without an answer.
 func diedDrawing(log, traceback string) bool {
 	last := ""
 	for line := range strings.Lines(log) {
 		line = strings.TrimSpace(line)
-		if line != "" && !chromiumLine.MatchString(line) {
+		if line != "" && !chromiumNotFatal(line) {
 			last = line
 		}
 	}
@@ -110,17 +121,18 @@ func convertsAgain(qtWebEngine string, st conversion) bool {
 	return qtWebEngine == droppingQtWebEngine && !st.OK && diedDrawing(st.Log, st.Traceback)
 }
 
-// convertPDF converts book 1 from EPUB to PDF in srv. When it fails as
-// convertsAgain describes, it says so in the test's log and converts
-// again, once, and returns the second conversion.
-func convertPDF(ctx context.Context, tb testing.TB, srv *server, qtWebEngine string) (conversion, error) {
+// convertPDF runs attempt, one conversion to PDF. When it fails as
+// convertsAgain describes, convertPDF says so in the test's log and runs
+// attempt again, once. It returns the last attempt's answer, so that what
+// a caller checks of an attempt is of the one that counts.
+func convertPDF(tb testing.TB, qtWebEngine string, attempt func() (conversion, error)) (conversion, error) {
 	tb.Helper()
-	st, err := srv.convert(ctx, 1, "EPUB", "pdf", convertWithin)
+	st, err := attempt()
 	if err != nil && convertsAgain(qtWebEngine, st) {
 		tb.Logf("converting again, once: Calibre's PDF worker ended just as Chromium started to draw the pages "+
 			"(its log ends at %q, and calibre-server read EOFError from it). Qt WebEngine %s, which this Calibre "+
 			"carries, does that now and then on a busy machine; 6.10.2 fixed it (QTBUG-142720)", drawing, qtWebEngine)
-		st, err = srv.convert(ctx, 1, "EPUB", "pdf", convertWithin)
+		st, err = attempt()
 	}
 	return st, err
 }
@@ -163,6 +175,9 @@ func TestConvertsAgainOnlyOnTheKnownDrop(t *testing.T) {
 	eofInCalibre := strings.Replace(failedInCalibre, "FileNotFoundError: [Errno 2] No such file or directory: '/titlepage.xhtml'", "EOFError", 1)
 	// calibre-server's end of the connection, broken another way
 	reset := strings.Replace(died.Traceback, "\nEOFError", "\nConnectionResetError: [Errno 104] Connection reset by peer", 1)
+	// A FATAL line of Chromium's, as this image logged one under rootless
+	// Podman with Chromium's namespace sandbox on, and its log on
+	fatal := diedLogged.Log + "[84:84:1127/013116.526831:FATAL:zygote_host_impl_linux.cc(224)] Check failed: . : No such file or directory (2)\n"
 	if reset == died.Traceback || eofInCalibre == failedInCalibre {
 		t.Fatal("a fixture traceback is not as this test expects")
 	}
@@ -174,6 +189,7 @@ func TestConvertsAgainOnlyOnTheKnownDrop(t *testing.T) {
 	}{
 		{"6.10.1, the worker ended as the pages started to be drawn", "6.10.1", died, true},
 		{"6.10.1, the same, with Chromium's log on", "6.10.1", diedLogged, true},
+		{"6.10.1, the same, with a FATAL line of Chromium's after it", "6.10.1", conversion{Log: fatal, Traceback: diedLogged.Traceback}, false},
 		{"6.10.2, which fixed it", "6.10.2", died, false},
 		{"6.11.0", "6.11.0", died, false},
 		{"6.10.0, an older one", "6.10.0", died, false},
@@ -189,6 +205,41 @@ func TestConvertsAgainOnlyOnTheKnownDrop(t *testing.T) {
 	for _, c := range cases {
 		if got := convertsAgain(c.qt, c.st); got != c.want {
 			t.Errorf("%s: converts again: %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestConvertPDFOnceMore: convertPDF runs its attempt again only when the
+// first failed as convertsAgain describes, never a third time, and returns
+// the last attempt's answer. It needs no image.
+func TestConvertPDFOnceMore(t *testing.T) {
+	t.Parallel()
+	died := conversion{Log: fixture(t, "died-drawing.log"), Traceback: fixture(t, "died-drawing.traceback")}
+	worked := conversion{OK: true, Fmt: "pdf"}
+	cases := []struct {
+		name    string
+		qt      string
+		answers []conversion // each attempt's answer, in turn
+		runs    int
+		want    conversion
+	}{
+		{"6.10.1, the worker ended, then it worked", "6.10.1", []conversion{died, worked}, 2, worked},
+		{"6.10.1, the worker ended twice", "6.10.1", []conversion{died, died, worked}, 2, died},
+		{"6.10.1, it worked at once", "6.10.1", []conversion{worked, died}, 1, worked},
+		{"6.10.2, the worker ended", "6.10.2", []conversion{died, worked}, 1, died},
+	}
+	for _, c := range cases {
+		runs := 0
+		got, err := convertPDF(t, c.qt, func() (conversion, error) {
+			st := c.answers[runs]
+			runs++
+			if !st.OK {
+				return st, errors.New("the conversion failed")
+			}
+			return st, nil
+		})
+		if runs != c.runs || got != c.want || (err == nil) != c.want.OK {
+			t.Errorf("%s: %d attempts, the last answer OK %v (err %v), want %d attempts and OK %v", c.name, runs, got.OK, err, c.runs, c.want.OK)
 		}
 	}
 }

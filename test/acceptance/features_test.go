@@ -37,49 +37,107 @@ const chromiumLog = imageChromium + " --enable-logging=stderr --v=1"
 // its seccomp-bpf filter.
 const sandboxed = "Activated seccomp-bpf sandbox for process type: renderer"
 
-// jobLogCode is Python that reads, every 50 ms until the file sys.argv[1]
-// exists, each log file under /tmp and calibre-server's own temporary
+// jobLogCode is Python that lists the log files already under the
+// folders sys.argv[3:], writes the file sys.argv[1] + ".ready", and then,
+// every 50 ms until the file sys.argv[1] exists, reads each log file there
+// that was not on that list, and prints the name of the first that holds
+// sys.argv[2]. The folders are /tmp and calibre-server's own temporary
 // folder, where its worker writes the stdout and stderr of a conversion
-// while it runs, and prints the name of the first that holds sys.argv[2].
-// calibre-server deletes a job's log when the job works, and logs it only
-// when it fails.
+// while it runs. calibre-server deletes a job's log when the job works,
+// and logs it only when it fails.
 const jobLogCode = `import os, sys, time
 stop, needle = sys.argv[1], sys.argv[2].encode()
-while not os.path.exists(stop):
+def logs():
     for top in sys.argv[3:]:
         for root, dirs, files in os.walk(top):
             for f in files:
                 if f.endswith(".log"):
-                    try:
-                        with open(os.path.join(root, f), "rb") as fh:
-                            if needle in fh.read(16 << 20):
-                                print(f)
-                                sys.exit(0)
-                    except OSError:
-                        pass
+                    yield os.path.join(root, f)
+before = set(logs())
+open(stop + ".ready", "w").close()
+while not os.path.exists(stop):
+    for path in logs():
+        if path in before:
+            continue
+        try:
+            with open(path, "rb") as fh:
+                if needle in fh.read(16 << 20):
+                    print(os.path.basename(path))
+                    sys.exit(0)
+        except OSError:
+            pass
     time.sleep(0.05)
 `
 
+// jobLogReadyWithin bounds the wait for jobLogCode to list the logs that
+// are already there.
+const jobLogReadyWithin = 30 * time.Second
+
 // jobLogHolds runs do, and reports whether a log calibre-server's worker
-// wrote meanwhile held needle.
-func jobLogHolds(tb testing.TB, c *harness.Container, needle string, do func()) bool {
+// began while do ran held needle. A log that was there before, such as
+// that of a conversion which ended first, never counts: do starts only
+// once the reader has listed those. The reader's wait is bounded by ctx.
+func jobLogHolds(ctx context.Context, tb testing.TB, c *harness.Container, needle string, do func()) bool {
 	tb.Helper()
 	stopAt := "/tmp/divbast-joblog-" + random(tb, 8, lower)
 	found := make(chan string, 1)
 	go func() {
-		out, err := inPython(context.WithoutCancel(tb.Context()), c, jobLogCode, stopAt, needle, "/tmp", serverTmp)
+		out, err := inPython(context.WithoutCancel(ctx), c, jobLogCode, stopAt, needle, "/tmp", serverTmp)
 		if err != nil {
 			tb.Errorf("reading calibre-server's job logs: %v", err)
 		}
 		found <- strings.TrimSpace(out)
 	}()
+	err := harness.Poll(ctx, jobLogReadyWithin, 100*time.Millisecond, func(ctx context.Context) error {
+		out, err := inPython(ctx, c, "import os, sys; print(os.path.exists(sys.argv[1]))", stopAt+".ready")
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(out) != "True" {
+			return harness.NotYet(errors.New("the reader of calibre-server's job logs has not listed the logs already there"))
+		}
+		return nil
+	})
+	if err != nil {
+		tb.Fatal(err)
+	}
 	do()
-	if _, err := inPython(tb.Context(), c, "import sys; open(sys.argv[1], 'w').close()", stopAt); err != nil {
+	if _, err := inPython(ctx, c, "import sys; open(sys.argv[1], 'w').close()", stopAt); err != nil {
 		tb.Fatal(err)
 	}
 	name := <-found
 	tb.Logf("the job log that holds it: %s", cmp.Or(name, "none"))
 	return name != ""
+}
+
+// TestJobLogHoldsOnlyNewLogs: jobLogHolds counts a log that do writes,
+// and never one that was there before, as a conversion that ended first
+// may leave. It runs no app: the container's process is a sleep.
+func TestJobLogHoldsOnlyNewLogs(t *testing.T) {
+	t.Parallel()
+	e, image := underTest(t)
+	c, err := e.Start(t.Context(), t, &harness.RunSpec{
+		Image:      image,
+		Network:    "none",
+		Confine:    harness.Contract(tmpfsSize),
+		Entrypoint: []string{python},
+		Args:       []string{"-I", "-c", "import time; time.sleep(3600)"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, text string) {
+		if _, err := inPython(t.Context(), c, "import sys; open(sys.argv[1], 'w').write(sys.argv[2])", "/tmp/"+name, text); err != nil {
+			t.Error(err)
+		}
+	}
+	write("ended-first_worker_redirect.log", "a conversion that ended first: "+sandboxed)
+	if jobLogHolds(t.Context(), t, c, sandboxed, func() { write("without_worker_redirect.log", "a conversion that never logged it") }) {
+		t.Error("a log that was there before jobLogHolds began counted")
+	}
+	if !jobLogHolds(t.Context(), t, c, sandboxed, func() { write("with_worker_redirect.log", "this conversion: "+sandboxed) }) {
+		t.Error("a log written while do ran, holding the line, did not count")
+	}
 }
 
 // envIsCode is Python that prints whether the environment of the process
@@ -123,8 +181,16 @@ func TestPDFOutputSandboxed(t *testing.T) {
 			}
 			out, err := inPython(ctx, b.s.C, envIsCode, strconv.Itoa(pid), "QTWEBENGINE_CHROMIUM_FLAGS", r.flags)
 			checks.True("calibre-server gets the Chromium flags "+r.flags, err == nil && strings.TrimSpace(out) == "True", fmt.Sprint(err))
-			var st conversion
-			logged := jobLogHolds(tb, b.s.C, sandboxed, func() { st, err = convertPDF(ctx, tb, b.srv, qt) })
+			// Each attempt has its own reader of the job logs, so that the
+			// line must be in the log of the attempt that worked, not in
+			// that of one whose worker ended first
+			var logged bool
+			st, err := convertPDF(tb, qt, func() (conversion, error) {
+				var got conversion
+				var cerr error
+				logged = jobLogHolds(ctx, tb, b.s.C, sandboxed, func() { got, cerr = b.srv.convert(ctx, 1, "EPUB", "pdf", convertWithin) })
+				return got, cerr
+			})
 			checks.True("the Content Server converts the EPUB to a PDF", err == nil && st.Fmt == "pdf", fmt.Sprintf("%q: %v", st.Fmt, err))
 			checks.True("the book has the PDF", serverHasFormat(ctx, b.srv, 1, "PDF") == nil, "")
 			if r.env != nil {
