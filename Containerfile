@@ -784,6 +784,12 @@ COPY --from=probe --chown=65532:65532 /out/books /books
 # log line to the engine as it is written. Calibre keeps its settings in
 # /config/calibre, its temporary files and its cache in /tmp; Calibre-Web
 # its cache in /config/calibre-web. Wand finds ImageMagick by MAGICK_HOME.
+# Chromium, which draws the pages of Calibre's PDF output, runs without
+# a GPU, without its namespace sandbox, and with its shared memory in
+# /tmp: rootless Podman lets it try a namespace sandbox that then fails,
+# and mounts /dev/shm read-only; Docker allows no namespace sandbox at
+# all. Each page is still drawn under Chromium's seccomp-bpf sandbox. Qt
+# turns the GPU off itself only while the variable is unset.
 ENV LC_ALL=C.UTF-8 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -791,7 +797,8 @@ ENV LC_ALL=C.UTF-8 \
     CALIBRE_TEMP_DIR=/tmp \
     CALIBRE_CACHE_DIRECTORY=/tmp/calibre-cache \
     CACHE_DIRECTORY=/config/calibre-web/cache \
-    MAGICK_HOME=/opt/imagemagick
+    MAGICK_HOME=/opt/imagemagick \
+    QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --disable-namespace-sandbox --disable-dev-shm-usage"
 
 # The licences of everything the image ships beyond its base: this
 # repository's, Calibre's and the libraries and Python packages its bundle
