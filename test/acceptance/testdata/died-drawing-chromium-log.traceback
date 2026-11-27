@@ -1,0 +1,7 @@
+Traceback (most recent call last):
+  File "calibre/utils/ipc/simple_worker.py", line 69, in run
+  File "calibre/utils/ipc/__init__.py", line 20, in eintr_retry_call
+  File "multiprocessing/connection.py", line 261, in recv
+  File "multiprocessing/connection.py", line 452, in _recv_bytes
+  File "multiprocessing/connection.py", line 421, in _recv
+EOFError

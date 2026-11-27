@@ -94,10 +94,14 @@ print((sys.argv[2] + "=" + sys.argv[3]).encode() in data)
 // which draws the pages in QtWebEngine: as the image runs it, calibre-server
 // gets the image's Chromium flags and the conversion works; and with
 // Chromium's own log on as well, the conversion's log shows each
-// page-drawing process under Chromium's seccomp-bpf filter.
+// page-drawing process under Chromium's seccomp-bpf filter. On Qt
+// WebEngine 6.10.1 alone, a conversion whose worker ended as Chromium
+// started to draw the pages is made again, once (see convertsAgain).
 func TestPDFOutputSandboxed(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
+	qt := qtWebEngineVersion(t, e, image)
+	t.Logf("Calibre's bundle carries Qt WebEngine %s", qt)
 	runs := []struct {
 		name  string
 		env   map[string]string
@@ -120,7 +124,7 @@ func TestPDFOutputSandboxed(t *testing.T) {
 			out, err := inPython(ctx, b.s.C, envIsCode, strconv.Itoa(pid), "QTWEBENGINE_CHROMIUM_FLAGS", r.flags)
 			checks.True("calibre-server gets the Chromium flags "+r.flags, err == nil && strings.TrimSpace(out) == "True", fmt.Sprint(err))
 			var st conversion
-			logged := jobLogHolds(tb, b.s.C, sandboxed, func() { st, err = b.srv.convert(ctx, 1, "EPUB", "pdf", convertWithin) })
+			logged := jobLogHolds(tb, b.s.C, sandboxed, func() { st, err = convertPDF(ctx, tb, b.srv, qt) })
 			checks.True("the Content Server converts the EPUB to a PDF", err == nil && st.Fmt == "pdf", fmt.Sprintf("%q: %v", st.Fmt, err))
 			checks.True("the book has the PDF", serverHasFormat(ctx, b.srv, 1, "PDF") == nil, "")
 			if r.env != nil {

@@ -1,0 +1,156 @@
+Conversion options changed from defaults:
+  read_metadata_from_opf: '/config/calibre/tmp/job-ocg50mep/in.opf'
+  verbose: 2
+Resolved conversion options
+calibre version: 9.19.0
+{'add_alt_text_to_img': False,
+ 'asciiize': False,
+ 'author_sort': None,
+ 'authors': None,
+ 'base_font_size': 0,
+ 'book_producer': None,
+ 'change_justification': 'original',
+ 'chapter': "//*[((name()='h1' or name()='h2') and re:test(., "
+            "'\\s*((chapter|book|section|part)\\s+)|((prolog|prologue|epilogue)(\\s+|$))', "
+            "'i')) or @class = 'chapter']",
+ 'chapter_mark': 'pagebreak',
+ 'comments': None,
+ 'cover': None,
+ 'custom_size': None,
+ 'debug_pipeline': None,
+ 'dehyphenate': True,
+ 'delete_blank_paragraphs': True,
+ 'disable_font_rescaling': False,
+ 'duplicate_links_in_toc': False,
+ 'embed_all_fonts': False,
+ 'embed_font_family': None,
+ 'enable_heuristics': False,
+ 'expand_css': False,
+ 'extra_css': None,
+ 'filter_css': None,
+ 'fix_indents': True,
+ 'font_size_mapping': None,
+ 'format_scene_breaks': True,
+ 'html_unwrap_factor': 0.4,
+ 'input_encoding': None,
+ 'input_profile': <calibre.customize.profiles.InputProfile object at 0xffff92be82f0>,
+ 'insert_blank_line': False,
+ 'insert_blank_line_size': 0.5,
+ 'insert_metadata': False,
+ 'isbn': None,
+ 'italicize_common_cases': True,
+ 'keep_ligatures': False,
+ 'language': None,
+ 'level1_toc': None,
+ 'level2_toc': None,
+ 'level3_toc': None,
+ 'line_height': 0,
+ 'linearize_tables': False,
+ 'margin_bottom': 5.0,
+ 'margin_left': 5.0,
+ 'margin_right': 5.0,
+ 'margin_top': 5.0,
+ 'markup_chapter_headings': True,
+ 'max_toc_links': 50,
+ 'minimum_line_height': 120.0,
+ 'no_chapters_in_toc': False,
+ 'no_inline_navbars': False,
+ 'output_profile': <calibre.customize.profiles.OutputProfile object at 0xffff92be96a0>,
+ 'page_breaks_before': '/',
+ 'paper_size': 'letter',
+ 'pdf_add_toc': False,
+ 'pdf_default_font_size': 20,
+ 'pdf_footer_template': None,
+ 'pdf_header_template': None,
+ 'pdf_hyphenate': False,
+ 'pdf_mark_links': False,
+ 'pdf_mono_family': 'Courier',
+ 'pdf_mono_font_size': 16,
+ 'pdf_no_cover': False,
+ 'pdf_odd_even_offset': 0.0,
+ 'pdf_page_margin_bottom': 72.0,
+ 'pdf_page_margin_left': 72.0,
+ 'pdf_page_margin_right': 72.0,
+ 'pdf_page_margin_top': 72.0,
+ 'pdf_page_number_map': None,
+ 'pdf_page_numbers': False,
+ 'pdf_sans_family': 'Helvetica',
+ 'pdf_serif_family': 'Times',
+ 'pdf_standard_font': 'serif',
+ 'pdf_use_document_margins': False,
+ 'prefer_metadata_cover': False,
+ 'preserve_cover_aspect_ratio': False,
+ 'pretty_print': False,
+ 'pubdate': None,
+ 'publisher': None,
+ 'rating': None,
+ 'read_metadata_from_opf': '/config/calibre/tmp/job-ocg50mep/in.opf',
+ 'remove_fake_margins': True,
+ 'remove_first_image': False,
+ 'remove_paragraph_spacing': False,
+ 'remove_paragraph_spacing_indent_size': 1.5,
+ 'renumber_headings': True,
+ 'replace_scene_breaks': '',
+ 'search_replace': None,
+ 'series': None,
+ 'series_index': None,
+ 'smarten_punctuation': False,
+ 'sr1_replace': '',
+ 'sr1_search': '',
+ 'sr2_replace': '',
+ 'sr2_search': '',
+ 'sr3_replace': '',
+ 'sr3_search': '',
+ 'start_reading_at': None,
+ 'subset_embedded_fonts': False,
+ 'tags': None,
+ 'timestamp': None,
+ 'title': None,
+ 'title_sort': None,
+ 'toc_filter': None,
+ 'toc_threshold': 6,
+ 'toc_title': None,
+ 'transform_css_rules': None,
+ 'transform_html_rules': None,
+ 'uncompressed_pdf': False,
+ 'unit': 'inch',
+ 'unsmarten_punctuation': False,
+ 'unwrap_lines': True,
+ 'use_auto_toc': False,
+ 'use_profile_size': False,
+ 'verbose': 2}
+Note 'webEngineArgs' are overridden by QTWEBENGINE_CHROMIUM_FLAGS
+QRhiGles2: Failed to create temporary context
+QRhiGles2: Failed to create context
+This plugin does not support createPlatformVulkanInstance
+QVulkanInstance: Failed to initialize Vulkan
+Unable to detect GPU vendor.
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+[84:93:1127/054301.511713:ERROR:bus.cc(408)] Failed to connect to the bus: Failed to connect to socket /var/run/dbus/system_bus_socket: No such file or directory
+Fontconfig error: No writable cache directories
+InputFormatPlugin: EPUB Input running
+on /config/calibre/tmp/job-ocg50mep/in.epub
+Found HTML cover titlepage.xhtml
+Parsing all content...
+Parsing stylesheet.css ...
+Parsing page_styles.css ...
+Parsing index.html ...
+Parsing titlepage.xhtml ...
+Reading TOC from NCX...
+Merging user specified metadata...
+Detecting structure...
+Flattening CSS and remapping font sizes...
+Source base font size is 12.00000pt
+Removing fake margins...
+Found 3 items of level: p_1
+Ignoring level p_1
+Cleaning up manifest...
+Trimming unused files from manifest...
+Creating PDF Output...
+Converting input as a text based book...
+Rendering 1 HTML files
+Rendered: index.html in 1.1 seconds (1/1)
+Removed 1 unused fonts
+Merged 4 instances of AAAAAA+DejaVuSans reducing size from 10.9 KB to 7.5 KB
+PDF output written to /config/calibre/tmp/job-ocg50mep/output.pdf

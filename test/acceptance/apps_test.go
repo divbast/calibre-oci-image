@@ -198,11 +198,14 @@ func (c *server) startConversion(ctx context.Context, id int, from, to string) (
 }
 
 // conversion is the Content Server's answer to a conversion's status poll.
+// A failed conversion's Log is its worker's output, and Traceback is the
+// error calibre-server caught from it.
 type conversion struct {
-	Running bool   `json:"running"`
-	OK      bool   `json:"ok"`
-	Log     string `json:"log"`
-	Fmt     string `json:"fmt"`
+	Running   bool   `json:"running"`
+	OK        bool   `json:"ok"`
+	Log       string `json:"log"`
+	Traceback string `json:"traceback"`
+	Fmt       string `json:"fmt"`
 }
 
 // poll asks once how job runs, as the Content Server's page does.
