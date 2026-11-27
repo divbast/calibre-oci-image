@@ -434,12 +434,13 @@ type events interface {
 
 // hooks joins app's proxy to the Coordinator: each request is counted, and
 // each failure the app gives is logged. On the Content Server's port,
-// requests are also gated, and the answers about conversions read; a
-// request from Calibre-Web's own calibredb has look look at the library
-// first, then is held until calibre-server reads the library as it is,
-// and counts as Calibre-Web's too; and any other request from inside the
-// container waits while calibre-server restarts, rather than being
-// refused.
+// requests are also gated, and the answers about conversions read; an
+// export by Calibre-Web's own calibredb, for a download or a send, has
+// look look at the library first, then is held until calibre-server reads
+// the library as it is; every request of that calibredb counts as
+// Calibre-Web's too; and any other request from inside the container,
+// show_metadata's among them, waits while calibre-server restarts, rather
+// than being refused.
 func hooks(apps events, app reload.App, look func(), logw io.Writer) proxy.Hooks {
 	h := proxy.Hooks{
 		Started: func(r *http.Request) func(int) { return apps.RequestStarted(app, r.Method, r.URL.Path) },
@@ -463,7 +464,7 @@ func hooks(apps events, app reload.App, look func(), logw io.Writer) proxy.Hooks
 	}
 	h.Hold = func(r *http.Request) error {
 		switch {
-		case fromWrapper(r):
+		case fromWrapper(r) && isExport(r.URL.Path):
 			look()
 			return apps.Hold(r.Context())
 		case fromLoopback(r):
@@ -490,6 +491,16 @@ func hooks(apps events, app reload.App, look func(), logw io.Writer) proxy.Hooks
 // user. Both must hold.
 func fromWrapper(r *http.Request) bool {
 	return fromLoopback(r) && digestUser(r.Header.Get("Authorization")) == firststart.InternalUser
+}
+
+// isExport reports whether path is calibredb's remote export, the route
+// /cdb/cmd/export/{version=0}, as calibre-server routes it: by its parts,
+// with the empty ones dropped. Calibre-Web exports a book through it to
+// download or send it with its metadata written in, and to convert it to
+// KEPUB.
+func isExport(path string) bool {
+	parts := strings.FieldsFunc(path, func(r rune) bool { return r == '/' })
+	return len(parts) >= 3 && len(parts) <= 4 && parts[0] == "cdb" && parts[1] == "cmd" && parts[2] == "export"
 }
 
 // fromLoopback reports whether r's TCP peer is a loopback address: a

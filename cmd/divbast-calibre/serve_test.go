@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -494,30 +495,46 @@ func TestTracker(t *testing.T) {
 	}
 }
 
-// TestHoldWrapper: on 8080, a request from the loopback that logs in by
+// TestHoldWrapper: on 8080, an export from the loopback that logs in by
 // digest as calibre-web, Calibre-Web's own calibredb, has PID 1 look at
-// the library, is held, and counts as Calibre-Web's once it goes on; no
-// other request is, whatever it shares with it. Any other request from
-// the loopback waits out a restart; one from outside never waits.
+// the library, and is held; every request of that calibredb counts as
+// Calibre-Web's once it goes on. No other request is held, whatever it
+// shares with it: show_metadata, any other request from the loopback,
+// which waits out a restart alone, and any request from outside, which
+// never waits.
 func TestHoldWrapper(t *testing.T) {
 	t.Parallel()
-	const digest = `Digest username="calibre-web", realm="calibre", nonce="n", uri="/cdb/cmd/export/0", response="r"`
+	const (
+		digest   = `Digest username="calibre-web", realm="calibre", nonce="n", uri="/cdb/cmd/export/0", response="r"`
+		export   = "/cdb/cmd/export/0"
+		metadata = "/cdb/cmd/show_metadata/0"
+	)
 	cases := []struct {
-		name, peer, auth string
-		held, waits      bool // held as the wrapper's, or waiting out a restart alone
+		name, peer, auth, path string
+		held, wrapper, waits   bool // held as an export; counted as Calibre-Web's; waiting out a restart alone
 	}{
-		{"the wrapper, on IPv4", "127.0.0.1:40000", digest, true, false},
-		{"the wrapper, on IPv6", "[::1]:40000", digest, true, false},
-		{"the wrapper, IPv4 in IPv6", "[::ffff:127.0.0.1]:40000", digest, true, false},
-		{"the scheme in other case, the parameter elsewhere", "127.0.0.1:40000", `digest realm="calibre", username="calibre-web", nonce="n"`, true, false},
-		{"the loopback, no login", "127.0.0.1:40000", "", false, true},
-		{"the loopback on IPv6, no login", "[::1]:40000", "", false, true},
-		{"the loopback, as admin", "127.0.0.1:40000", `Digest username="admin", realm="calibre"`, false, true},
-		{"the loopback, Basic", "127.0.0.1:40000", "Basic Y2FsaWJyZS13ZWI6eA==", false, true},
-		{"the loopback, a name that only ends so", "127.0.0.1:40000", `Digest username="x-calibre-web", realm="calibre"`, false, true},
-		{"a client outside, as calibre-web", "192.0.2.7:40000", digest, false, false},
-		{"the container's own address, as calibre-web", "10.89.0.2:40000", digest, false, false},
-		{"a client outside, no login", "192.0.2.7:40000", "", false, false},
+		{"the wrapper's export, on IPv4", "127.0.0.1:40000", digest, export, true, true, false},
+		{"the wrapper's export, on IPv6", "[::1]:40000", digest, export, true, true, false},
+		{"the wrapper's export, IPv4 in IPv6", "[::ffff:127.0.0.1]:40000", digest, export, true, true, false},
+		{"the scheme in other case, the parameter elsewhere", "127.0.0.1:40000", `digest realm="calibre", username="calibre-web", nonce="n"`, export, true, true, false},
+		{"the wrapper's export, empty parts in its path", "127.0.0.1:40000", digest, "//cdb//cmd/export/0/", true, true, false},
+		{"the wrapper's export, with no version", "127.0.0.1:40000", digest, "/cdb/cmd/export", true, true, false},
+		{"the wrapper's show_metadata", "127.0.0.1:40000", digest, metadata, false, true, true},
+		{"the wrapper, a command that only starts as export", "127.0.0.1:40000", digest, "/cdb/cmd/exports/0", false, true, true},
+		{"the loopback, no login", "127.0.0.1:40000", "", export, false, false, true},
+		{"the loopback on IPv6, no login", "[::1]:40000", "", export, false, false, true},
+		{"the loopback, as admin", "127.0.0.1:40000", `Digest username="admin", realm="calibre"`, export, false, false, true},
+		{"the loopback, Basic", "127.0.0.1:40000", "Basic Y2FsaWJyZS13ZWI6eA==", export, false, false, true},
+		{"the loopback, a name that only ends so", "127.0.0.1:40000", `Digest username="x-calibre-web", realm="calibre"`, export, false, false, true},
+		{"a client outside, as calibre-web", "192.0.2.7:40000", digest, export, false, false, false},
+		{"the container's own address, as calibre-web", "10.89.0.2:40000", digest, export, false, false, false},
+		{"a client outside, no login", "192.0.2.7:40000", "", export, false, false, false},
+	}
+	one := func(b bool) int {
+		if b {
+			return 1
+		}
+		return 0
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -525,7 +542,8 @@ func TestHoldWrapper(t *testing.T) {
 			f := &fakeEvents{}
 			looks := 0
 			h := hooks(f, reload.ContentServer, func() { looks++ }, io.Discard)
-			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://127.0.0.1:8080/cdb/cmd/export/0", http.NoBody)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://127.0.0.1:8080/", http.NoBody)
+			r.URL.Path = tc.path
 			r.RemoteAddr = tc.peer
 			if tc.auth != "" {
 				r.Header.Set("Authorization", tc.auth)
@@ -534,22 +552,104 @@ func TestHoldWrapper(t *testing.T) {
 				t.Fatal(err)
 			}
 			h.Started(r)(http.StatusOK)
-			want, waits := 0, 0
-			if tc.held {
-				want = 1
+			if looks != one(tc.held) || f.holds != one(tc.held) {
+				t.Errorf("looked %d times and held %d, want %d each", looks, f.holds, one(tc.held))
 			}
-			if tc.waits {
-				waits = 1
+			if f.wrapped != one(tc.wrapper) {
+				t.Errorf("counted %d for Calibre-Web, want %d", f.wrapped, one(tc.wrapper))
 			}
-			if looks != want || f.holds != want || f.wrapped != want {
-				t.Errorf("looked %d times, held %d and counted %d for Calibre-Web, want %d each", looks, f.holds, f.wrapped, want)
-			}
-			if f.waits != waits {
-				t.Errorf("waited out a restart %d times, want %d", f.waits, waits)
+			if f.waits != one(tc.waits) {
+				t.Errorf("waited out a restart %d times, want %d", f.waits, one(tc.waits))
 			}
 			if len(f.started) != 1 {
 				t.Errorf("Started counted %d requests, want 1", len(f.started))
 			}
 		})
+	}
+}
+
+// countingReloader counts calibre-server's restarts, and reconnects
+// Calibre-Web at once.
+type countingReloader struct{ restarts atomic.Int32 }
+
+func (*countingReloader) ReconnectCalibreWeb(context.Context) error { return nil }
+
+func (r *countingReloader) RestartContentServer(context.Context) error {
+	r.restarts.Add(1)
+	return nil
+}
+
+// TestHoldExportOnly runs 8080's hooks against a Coordinator on the real
+// clock, with a Quiet of 300 ms: while a restart is due after a change in
+// Calibre-Web, the wrapper's show_metadata goes on at once and brings no
+// restart; its export is held, restarts calibre-server at once, and goes
+// on once calibre-server takes connections. A second export, right after
+// that restart's start, brings the next restart only Quiet after it.
+func TestHoldExportOnly(t *testing.T) {
+	t.Parallel()
+	opts := reload.Options{Window: time.Second, Quiet: 300 * time.Millisecond, Cap: time.Minute, RetryAfter: time.Second}
+	rl := &countingReloader{}
+	c := reload.New(reload.SystemClock(), rl, opts)
+	t.Cleanup(c.Stop)
+	for _, app := range []reload.App{reload.ContentServer, reload.CalibreWeb} {
+		c.Accepting(app, c.Started(app))
+	}
+	time.Sleep(opts.Quiet + 50*time.Millisecond) // past the pacing of calibre-server's start
+	h := hooks(c, reload.ContentServer, func() {}, io.Discard)
+	edit := func() {
+		done := c.RequestStarted(reload.CalibreWeb, http.MethodPost, "/admin/book/1")
+		c.DBChanged(time.Now())
+		done(http.StatusOK)
+	}
+	hold := func(path string) <-chan error {
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://127.0.0.1:8080"+path, http.NoBody)
+		r.RemoteAddr = "127.0.0.1:40000"
+		r.Header.Set("Authorization", `Digest username="calibre-web", realm="calibre", nonce="n"`)
+		errc := make(chan error, 1)
+		go func() { errc <- h.Hold(r) }()
+		return errc
+	}
+	within := func(errc <-chan error, d time.Duration) bool {
+		select {
+		case err := <-errc:
+			if err != nil {
+				t.Errorf("Hold: %v", err)
+			}
+			return true
+		case <-time.After(d):
+			return false
+		}
+	}
+
+	edit()
+	if !within(hold("/cdb/cmd/show_metadata/0"), 100*time.Millisecond) || rl.restarts.Load() != 0 {
+		t.Fatalf("show_metadata, with a restart due: held, or %d restarts; want at once, none", rl.restarts.Load())
+	}
+	exported := hold("/cdb/cmd/export/0")
+	if within(exported, 100*time.Millisecond) {
+		t.Fatal("the export, with a restart due, went on before the restart")
+	}
+	if got := rl.restarts.Load(); got != 1 {
+		t.Fatalf("the export brought %d restarts, want 1 at once", got)
+	}
+	c.Accepting(reload.ContentServer, c.Started(reload.ContentServer))
+	if !within(exported, time.Second) {
+		t.Fatal("the export was not let go once calibre-server took connections")
+	}
+
+	edit()
+	again := hold("/cdb/cmd/export/0")
+	if within(again, opts.Quiet/2) || rl.restarts.Load() != 1 {
+		t.Fatalf("an export right after the restart's start: went on, or %d restarts; want held, 1", rl.restarts.Load())
+	}
+	if within(again, opts.Quiet) {
+		t.Fatal("the second export went on before its restart")
+	}
+	if got := rl.restarts.Load(); got != 2 {
+		t.Fatalf("Quiet after the restart's start: %d restarts, want 2", got)
+	}
+	c.Accepting(reload.ContentServer, c.Started(reload.ContentServer))
+	if !within(again, time.Second) {
+		t.Fatal("the second export was not let go")
 	}
 }
