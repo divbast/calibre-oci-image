@@ -6,6 +6,7 @@ package acceptance
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -52,14 +53,22 @@ func (r *redactor) password() string {
 	return pw
 }
 
-// pieces are pw, and its parts between control and format characters (Cc
-// and Cf), such as a tab or a byte-order mark: a test's output can quote a
-// password, as %q does, and a program can drop such a character, and then
-// only its parts stay as they were.
+// pieces are pw, its parts between control and format characters (Cc and
+// Cf), such as a tab or a byte-order mark, and each of those as %q writes
+// it, inside its quotes: a test's output can quote a password, as %q does,
+// and the contract's failing records do, which escapes a quote, a
+// backslash and such a character; and a program can drop such a
+// character, and then only its parts stay as they were.
 func pieces(pw string) []string {
 	split := func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }
-	return slices.DeleteFunc(slices.Concat([]string{pw}, strings.FieldsFunc(pw, split)),
-		func(p string) bool { return p == "" })
+	plain := slices.Concat([]string{pw}, strings.FieldsFunc(pw, split))
+	out := slices.Clone(plain)
+	for _, p := range plain {
+		q := strconv.Quote(p)
+		out = append(out, q[1:len(q)-1])
+	}
+	slices.Sort(out)
+	return slices.DeleteFunc(slices.Compact(out), func(p string) bool { return p == "" })
 }
 
 // redact returns s with every hidden password, and each of its pieces,
@@ -143,8 +152,9 @@ func (r *recorder) Fatal(args ...any) { r.got = append(r.got, fmt.Sprint(args...
 // TestRedactor: every way a test prints, its own messages, the harness's
 // checks, and a quoted container log as the harness clips it, reaches the
 // test's log with each hidden password, and each of its pieces, replaced:
-// a part between control characters, and one without a byte-order mark.
-// It needs no image.
+// a part between control characters, one without a byte-order mark, and
+// one quoted as %q quotes it, as the contract's failing records do. It
+// needs no image.
 func TestRedactor(t *testing.T) {
 	t.Parallel()
 	rec := &recorder{TB: t}
@@ -156,6 +166,10 @@ func TestRedactor(t *testing.T) {
 	marked := "\uFEFFAa1!" + random(t, 20, lower)
 	r.hide(marked)
 	unmarked := strings.TrimPrefix(marked, "\uFEFF")
+	// %q escapes a quote and a backslash, so neither is then as it was
+	quoted := "Aa1!" + random(t, 12, lower) + `"\` + random(t, 12, upper)
+	r.hide(quoted)
+	escaped := strconv.Quote(quoted)
 	log := "divbast-calibre: started\n" + plain + "\nthe password: " + tabbed + "\n"
 
 	r.Logf("read %s", plain)
@@ -163,17 +177,18 @@ func TestRedactor(t *testing.T) {
 	r.Logf("read %s, without its mark", unmarked)
 	r.Errorf("its log: %s", harness.Clip(log))
 	r.Fatalf("the log of container c:\n%s", log)
+	r.Errorf("found %q", quoted)
 	harness.NewChecks(r).True("a check", false, "found "+plain)
 	harness.Contains(r, "the log holds it", "absent", log)
 
 	got := strings.Join(rec.got, "\n")
-	for _, p := range slices.Concat(pieces(plain), pieces(tabbed), []string{unmarked}) {
+	for _, p := range slices.Concat(pieces(plain), pieces(tabbed), []string{unmarked, escaped[1 : len(escaped)-1]}) {
 		if strings.Contains(got, p) {
 			t.Errorf("what reached the log holds a piece of a hidden password, %d bytes long", len(p))
 		}
 	}
-	if n := strings.Count(got, hidden); len(rec.got) != 7 || n < 9 {
-		t.Errorf("got %d messages holding %s %d times, want 7 messages and it at least 9 times", len(rec.got), hidden, n)
+	if n := strings.Count(got, hidden); len(rec.got) != 8 || n < 10 {
+		t.Errorf("got %d messages holding %s %d times, want 8 messages and it at least 10 times", len(rec.got), hidden, n)
 	}
 	if !strings.Contains(got, "divbast-calibre: started") {
 		t.Errorf("what is no password is gone too: %q", got)
