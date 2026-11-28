@@ -533,7 +533,7 @@ RUN ./configure --prefix=/opt/imagemagick --disable-static --enable-shared --wit
 # GitHub repository by commit, with the tag checked as ImageMagick's is,
 # its Go modules fetched by go.sum, then built with no network, static,
 # with its version set as upstream's release builds set it.
-FROM dhi.io/golang:1.27.4-debian13-dev@sha256:121afb8b390b1d6babba8cd0a93eaf2ffa3735f835d388b9d79c2be38b41ee4f AS kepubify
+FROM dhi.io/golang:1.27.4-debian13-dev@sha256:c5c02f15e0fd96999d48d70545b7c76b7080caebc9367680812d5244ac316bee AS kepubify
 ARG KEPUBIFY_VERSION
 ARG KEPUBIFY_COMMIT
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
@@ -625,7 +625,7 @@ RUN read -r major minor beta </tmp/unrar.version \
 # Calibre-Web runs. Static, on the standard library. Calibre-Web finds
 # its two Calibre programs in /opt/calibre-bin: ebook-convert is
 # Calibre's, and calibredb is this command.
-FROM dhi.io/golang:1.27.4-debian13-dev@sha256:121afb8b390b1d6babba8cd0a93eaf2ffa3735f835d388b9d79c2be38b41ee4f AS probe
+FROM dhi.io/golang:1.27.4-debian13-dev@sha256:c5c02f15e0fd96999d48d70545b7c76b7080caebc9367680812d5244ac316bee AS probe
 ARG CALIBRE_VERSION
 ARG CALIBRE_WEB_COMMIT
 WORKDIR /src
