@@ -28,7 +28,6 @@ var Fills = []Fill{
 	{"CALIBRE_SHA256_ARM64", "https://download.calibre-ebook.com/${CALIBRE_VERSION}/calibre-${CALIBRE_VERSION}-arm64.txz"},
 	{"CALIBRE_WEB_SHA256", "https://github.com/janeczku/calibre-web/archive/${CALIBRE_WEB_COMMIT}.tar.gz"},
 	{"GHOSTSCRIPT_SHA256", "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs${GHOSTSCRIPT_TAG}/ghostscript-${GHOSTSCRIPT_VERSION}.tar.xz"},
-	{"UNRAR_SHA256", "https://www.rarlab.com/rar/unrarsrc-${UNRAR_VERSION}.tar.gz"},
 }
 
 // FillHashes returns the Containerfile cf with each fill's Arg set to the

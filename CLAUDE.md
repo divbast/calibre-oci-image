@@ -441,7 +441,7 @@ or read in upstream's source where the line says so:
   PS, EPS and writing a PDF raise `PolicyError`. Calibre itself cannot run
   there, since its launchers need `/proc`: the acceptance suite runs it
   first. The final stage takes the packages from this stage
-- **Ghostscript, ImageMagick and unrar link to DHI's libraries**, and
+- **Ghostscript and ImageMagick link to DHI's libraries**, and
   each must pass `check-elf`: PIE, `BIND_NOW`, `GNU_RELRO`, and no library
   that the runtime and the added packages do not ship. Ghostscript is
   built as a library (`make so`), with its own copies of DHI's libraries
@@ -450,10 +450,17 @@ or read in upstream's source where the line says so:
   `MAGICKCORE_XML_DELEGATE`. kepubify is static Go, built offline, and
   must print its version
 - **Each tool's source is checked**: ImageMagick and kepubify by commit,
-  after which the tag must still name it; Ghostscript and unrar by the
-  sha256 that their `ADD` holds
+  after which the tag must still name it; Ghostscript by the sha256 that
+  its `ADD` holds. unrar is not built here: it is `COPY --from` the
+  `ghcr.io/divbast/unrar` carrier of divbast/native-tools, by digest,
+  which ci's `divbast-verify-images` checks and Renovate moves. Its
+  binary stays at `/usr/local/bin/unrar` and its licence at
+  `/usr/local/share/doc/unrar/license.txt`
 - **The SBOMs are written from the same ARGs and the signed tag's
-  lists**, by `sbom/sboms.py`. A library or Python package its tables do
+  lists**, by `sbom/sboms.py`, except unrar's component, which is the
+  carrier's own, kept as it wrote it with only a `path` property added;
+  the build fails unless the carrier's SBOM holds exactly one unrar
+  component carrying a cpe or a purl. A library or Python package its tables do
   not name fails the build, saying what to add. Both SBOMs are in
   `io.github.divbast.scan.sboms`; the bundle's alone is in
   `io.github.divbast.scan.sboms.advisory`. grype matches a Go component
@@ -462,7 +469,7 @@ or read in upstream's source where the line says so:
   `CALIBRE_SHA256_X86_64`, `CALIBRE_SHA256_ARM64`; `CALIBRE_WEB_COMMIT`,
   `CALIBRE_WEB_SHA256`; `IMAGEMAGICK_VERSION`, `IMAGEMAGICK_COMMIT`;
   `GHOSTSCRIPT_VERSION`, `GHOSTSCRIPT_TAG`, `GHOSTSCRIPT_SHA256`;
-  `KEPUBIFY_VERSION`, `KEPUBIFY_COMMIT`; `UNRAR_VERSION`, `UNRAR_SHA256`.
+  `KEPUBIFY_VERSION`, `KEPUBIFY_COMMIT`.
   Renovate's managers read them that way. `IMAGE_PAIR` is
   `divbast-pins`'s to write, and `-check` holds it to the two apps'
   versions
@@ -485,7 +492,7 @@ or read in upstream's source where the line says so:
   `CALIBRE_WEB_COMMIT`, through `python/requirements.in`'s two `-r`
   lines, read for Linux and the Containerfile's DHI Python; and
   `python/pins.txt`. It fills in each checksum ARG that is empty
-  (Calibre's two, Calibre-Web's, Ghostscript's and unrar's), and writes
+  (Calibre's two, Calibre-Web's and Ghostscript's), and writes
   `IMAGE_PAIR`. `just lint` runs it with `-check`, which fails with a diff
   when a file is stale. It needs the network
 - **A set checksum is never rewritten.** Renovate's update empties it,
@@ -546,9 +553,8 @@ input and merges it once every check passes, while `CALIBRE_AUTOMERGE` is
   github-tags, since its releases give Renovate no commit;
 - Ghostscript's releases, by their tag number, `gs10080`, from which the
   update writes `GHOSTSCRIPT_VERSION`, emptying the checksum;
-- unrar's tarball, from RARLAB's `rar_add.htm`, betas included, with
-  `UNRAR_SHA256` emptied: nothing shows that the first download is
-  RARLAB's own;
+- the unrar carrier's digest, by the dockerfile manager, in the
+  Containerfile's `COPY --from` lines;
 - each line of `python/pins.txt`, from PyPI;
 - the DHI images, the Python runtime and `-dev` grouped by the app
   preset, and the packages of the toolchain and runtimelibs stages,
@@ -556,7 +562,7 @@ input and merges it once every check passes, while `CALIBRE_AUTOMERGE` is
 
 Renovate proposes no pin past `python/renovate-bounds.json`'s bounds,
 nor Cython past `renovate.json`'s own rule. A PR that moves Calibre,
-Calibre-Web, Ghostscript, unrar or a pin runs
+Calibre-Web, Ghostscript or a pin runs
 `go run ./cmd/divbast-pins` as a post-upgrade task, which ci's
 `RENOVATE_ALLOWED_COMMANDS` allows, so the locks, the checksums and
 `IMAGE_PAIR` move with it. A new Calibre-Web whose requirements need a pin

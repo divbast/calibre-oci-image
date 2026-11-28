@@ -4,7 +4,7 @@
 """Write the image's two CycloneDX SBOMs, of what no scanner sees in it.
 
 The Containerfile's sbom stage runs this, in the build's own Python, as
-``python3 -I sboms.py --sources <sources.json> --pyproject <pyproject.toml> --unrar ... --out <dir>``.
+``python3 -I sboms.py --sources <sources.json> --pyproject <pyproject.toml> --unrar-sbom <cdx.json> --out <dir>``.
 
 ``calibre-bundle.cdx.json`` names the libraries Calibre's build compiled
 into its Linux bundle, from the bundle's ``bypy/sources.json``: every
@@ -16,7 +16,11 @@ or package a table does not name fails the build, with a line saying what
 to add, so that none goes unlisted.
 
 ``tools.cdx.json`` names the tools the image builds itself: ImageMagick,
-Ghostscript and the jbig2dec inside it, kepubify and unrar.
+Ghostscript and the jbig2dec inside it, kepubify and unrar. unrar's
+component is the one divbast/native-tools' carrier wrote in its own SBOM,
+as it wrote it, with only the path it sits at in this image appended to its
+properties; the run fails unless the carrier's SBOM holds exactly one unrar
+component, and that one names a cpe or a purl, which the scan matches it by.
 
 It prints nothing when it succeeds. When it fails, it prints one line to
 stderr and exits with code 1.
@@ -322,9 +326,36 @@ def frozen(pyproject: dict[str, object]) -> list[dict[str, object]]:
     return components
 
 
+# Where the image puts unrar
+UNRAR_PATH = "/usr/local/bin/unrar"
+
+
+def carried_unrar(path: Path) -> dict[str, object]:
+    """Return the carrier's unrar component, with its path in this image.
+
+    The component stays as the carrier wrote it: the version, licence,
+    source and cpe are native-tools'. It must be the only one named unrar,
+    and carry a cpe or a purl, since the scan matches by nothing else.
+    """
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        found = [c for c in document["components"] if c["name"] == "unrar"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        msg = f"{path} is not the carrier's SBOM: {e}"
+        raise SBOMError(msg) from e
+    if len(found) != 1:
+        msg = f"the carrier's SBOM must hold exactly one unrar component, not {len(found)}"
+        raise SBOMError(msg)
+    unrar = found[0]
+    if not (unrar.get("cpe") or unrar.get("purl")):
+        msg = "the carrier's unrar component has neither a cpe nor a purl, so the scan could not match it"
+        raise SBOMError(msg)
+    unrar.setdefault("properties", []).append({"name": "path", "value": UNRAR_PATH})
+    return unrar
+
+
 def tools(args: argparse.Namespace) -> list[dict[str, object]]:
     """Return the components of the tools the image builds."""
-    unrar = f"{args.unrar} beta {args.unrar_beta}" if args.unrar_beta > 0 else args.unrar
     return [
         component(
             "imagemagick",
@@ -356,13 +387,7 @@ def tools(args: argparse.Namespace) -> list[dict[str, object]]:
             "MIT",
             "/usr/local/bin/kepubify",
         ),
-        component(
-            "unrar",
-            unrar,
-            {"cpe": cpe("rarlab", "unrar", args.unrar)},
-            "LicenseRef-UnRAR",
-            "/usr/local/bin/unrar",
-        ),
+        carried_unrar(args.unrar_sbom),
     ]
 
 
@@ -385,8 +410,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--sources", type=Path, required=True)
     parser.add_argument("--pyproject", type=Path, required=True)
-    parser.add_argument("--unrar", required=True)
-    parser.add_argument("--unrar-beta", type=int, required=True)
+    parser.add_argument("--unrar-sbom", type=Path, required=True)
     parser.add_argument("--imagemagick", required=True)
     parser.add_argument("--ghostscript", required=True)
     parser.add_argument("--jbig2dec", required=True)
