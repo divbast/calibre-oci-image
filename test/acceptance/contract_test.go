@@ -67,6 +67,7 @@ func TestContract(t *testing.T) {
 		Exec:          []string{binary, "version"},
 		ExtraTCPPorts: []int{webPort, serverLoopback, webLoopback},
 		HealthCmd:     healthCmd,
+		Redact:        tb.redact,
 		Healthcheck: contract.Healthcheck{
 			Test:        slices.Concat([]string{"CMD"}, healthCmd),
 			Interval:    30 * time.Second,
