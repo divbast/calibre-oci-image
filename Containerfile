@@ -60,7 +60,7 @@ RUN rm /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         binutils=2.44-3+deb13u0+dhi10 \
-        cargo=1.100.0-5 \
+        cargo=1.100.1-0 \
         curl=8.14.1-2+deb13u7+dhi1 \
         g++=4:14.2.0-1+deb13u0+dhi0 \
         gcc=4:14.2.0-1+deb13u0+dhi0 \
@@ -84,7 +84,7 @@ RUN rm /etc/apt/sources.list.d/debian.sources \
         libxslt1-dev=1.1.35-1.2+deb13u3+dhi2 \
         make=4.4.1-2+deb13u0+dhi1 \
         pkgconf=1.8.1-4+deb13u0+dhi1 \
-        rustc=1.100.0-5 \
+        rustc=1.100.1-0 \
         xz-utils=5.8.1-1+deb13u2+dhi0 \
         zlib1g-dev=1:1.3.dfsg+really1.3.1-1+deb13u1+dhi0 \
     && rm -rf /var/lib/apt/lists/*
