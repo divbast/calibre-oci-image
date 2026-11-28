@@ -12,8 +12,8 @@ ARG CALIBRE_SHA256_X86_64=35c1cbda1a2548aceeb89cb0a4be47a36025b5dc102ac046f7eaf9
 ARG CALIBRE_SHA256_ARM64=8de5c5d3af3f28e0227e215a27e8d69c14c50a38cc3065b249996997df392a2f
 # Calibre-Web is built from its master branch, by a full
 # commit, and the checksum of the archive GitHub makes from it
-ARG CALIBRE_WEB_COMMIT=79d35711d73491881ecd2b13ded02c277543dbcb
-ARG CALIBRE_WEB_SHA256=0f4f0bf0e918904c13fee5052decc03cded8ac511b773f7d71245bc05309f609
+ARG CALIBRE_WEB_COMMIT=ae4d59e6f9ddfd98dfa559b34ce3500a886b1eb2
+ARG CALIBRE_WEB_SHA256=
 # The tag that names both apps, <Calibre version>-cw.<first 7 of the
 # Calibre-Web commit>, written by go run ./cmd/divbast-pins, which -check
 # holds to them
