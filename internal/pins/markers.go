@@ -12,19 +12,20 @@ import (
 // MarkerEnv is the platform a requirement's environment marker is judged
 // for, by PEP 508's variables. A requirements file is read for
 // python_version, sys_platform and platform_system alone, the three such
-// files name for Linux, Windows and macOS; a variable left "" is one this
-// tool does not know the image's value of, and any marker naming it is an
-// error. Dist is a released package's Requires-Dist, read as pip check
-// reads it: with no extra, so a requirement only an extra asks for is
-// never one.
+// files name for Linux, Windows and macOS: a marker naming any other
+// variable is an error. Dist, when set, is a released package's
+// Requires-Dist, which names more.
 type MarkerEnv struct {
 	PythonVersion, SysPlatform, PlatformSystem string
-
-	PythonFullVersion, OSName, ImplementationName string
-	PlatformPythonImplementation, PlatformMachine string
-
-	Dist bool
+	Dist                                       *DistEnv
 }
+
+// DistEnv is what a Requires-Dist marker names beyond a requirements
+// file's three variables, read as pip check reads it: with no extra, so a
+// requirement only an extra asks for is never one, on CPython on Linux,
+// where os_name is "posix", implementation_name "cpython" and
+// platform_python_implementation "CPython".
+type DistEnv struct{ PythonFullVersion, PlatformMachine string }
 
 // DistEnvs are the platforms a Requires-Dist marker is judged for: the
 // image's Linux and CPython pythonFull, such as 3.15.2, on each
@@ -36,9 +37,7 @@ func DistEnvs(pythonFull string) []MarkerEnv {
 	for _, arch := range arches {
 		envs = append(envs, MarkerEnv{
 			PythonVersion: major + "." + minor, SysPlatform: "linux", PlatformSystem: "Linux",
-			PythonFullVersion: pythonFull, OSName: "posix", ImplementationName: "cpython",
-			PlatformPythonImplementation: "CPython", PlatformMachine: arch,
-			Dist: true,
+			Dist: &DistEnv{PythonFullVersion: pythonFull, PlatformMachine: arch},
 		})
 	}
 	return envs
@@ -175,15 +174,16 @@ func (p *markerParser) compare(variable, op, value string, reversed bool) (bool,
 		return false, fmt.Errorf("the operator %s is not one this tool reads", op)
 	}
 	unknown := fmt.Errorf("the variable %s is not one this tool knows the image's value of", variable)
+	d := p.env.Dist
 	var have string
 	switch variable {
 	case "python_version", "python_full_version":
 		v := p.env.PythonVersion
 		if variable == "python_full_version" {
-			v = p.env.PythonFullVersion
-		}
-		if v == "" {
-			return false, unknown
+			if d == nil {
+				return false, unknown
+			}
+			v = d.PythonFullVersion
 		}
 		order, err := compareVersions(v, value)
 		if err != nil {
@@ -193,21 +193,21 @@ func (p *markerParser) compare(variable, op, value string, reversed bool) (bool,
 			order = -order
 		}
 		return map[string]bool{"==": order == 0, "!=": order != 0, ">=": order >= 0, "<=": order <= 0, ">": order > 0, "<": order < 0}[op], nil
-	case "extra":
-		if !p.env.Dist {
+	case "sys_platform":
+		have = p.env.SysPlatform
+	case "platform_system":
+		have = p.env.PlatformSystem
+	case "extra", "os_name", "implementation_name", "platform_python_implementation", "platform_machine":
+		if d == nil {
 			return false, unknown
 		}
 		// pip check reads no extra: extra == "x" is false, and != true
-	default:
 		have = map[string]string{
-			"sys_platform": p.env.SysPlatform, "platform_system": p.env.PlatformSystem,
-			"os_name": p.env.OSName, "implementation_name": p.env.ImplementationName,
-			"platform_python_implementation": p.env.PlatformPythonImplementation,
-			"platform_machine":               p.env.PlatformMachine,
+			"os_name": "posix", "implementation_name": "cpython", "platform_python_implementation": "CPython",
+			"platform_machine": d.PlatformMachine,
 		}[variable]
-		if have == "" {
-			return false, unknown
-		}
+	default:
+		return false, unknown
 	}
 	switch op {
 	case "==":

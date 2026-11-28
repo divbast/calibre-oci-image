@@ -26,6 +26,11 @@
 //     sha256 of each wheel a build stage may install;
 //   - python/files.txt: every file of both locks, by its sha256 and URL,
 //     which the build fetches and checks before pip reads anything;
+//   - python/renovate-bounds.json: a Renovate preset, which renovate.json
+//     extends, with a rule for each pin of pins.txt that upstream or a
+//     package of either lock bounds from above, as pip check reads the
+//     packages' requirements, so Renovate proposes no version of it the
+//     build would refuse;
 //   - the Containerfile, with each empty checksum ARG of the downloads the
 //     image checks set to the sha256 of the file its URL serves, and
 //     IMAGE_PAIR, the Calibre version and the first seven characters of

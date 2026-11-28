@@ -63,7 +63,7 @@ func TestEvalMarkerDist(t *testing.T) {
 	}
 	arch := map[string]MarkerEnv{}
 	for _, e := range envs {
-		arch[e.PlatformMachine] = e
+		arch[e.Dist.PlatformMachine] = e
 	}
 	tests := []struct {
 		expr, machine string
