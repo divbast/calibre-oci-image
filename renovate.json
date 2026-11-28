@@ -1,6 +1,10 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>divbast/renovate-config", "github>divbast/renovate-config:app"],
+  "extends": [
+    "github>divbast/renovate-config",
+    "github>divbast/renovate-config:app",
+    "github>divbast/calibre-oci-image//python/renovate-bounds"
+  ],
   "customDatasources": {
     "rarlab": {
       "description": "unrar's source tarballs, as RARLAB's own download page for extras links them: RARLAB publishes no feed and no checksums, and the page links the newest tarball, betas included. Each link is a release; extractVersion below keeps the unrarsrc-<n>.tar.gz ones and their counter-style names.",
@@ -167,6 +171,13 @@
         "executionMode": "branch",
         "installTools": { "golang": {} }
       }
+    },
+    {
+      "description": "lxml 6.1.3, which the build compiles from source, builds only with Cython>=3.2.9,<3.3, and the build holds every source build to what its pyproject.toml asks for, so a newer Cython would fail the image. A build's own requirements are in its source release alone, which python/renovate-bounds.json does not read. Lift this when the lxml the locks hold takes a newer Cython.",
+      "matchManagers": ["custom.regex"],
+      "matchDatasources": ["pypi"],
+      "matchPackageNames": ["cython"],
+      "allowedVersions": "<3.3"
     },
     {
       "description": "The packages the toolchain and runtimelibs stages install move together, in one pull request, and merge once every check passes.",

@@ -951,6 +951,19 @@ requirements at the new commit and the pins, and writes `IMAGE_PAIR`, so
 they all move together. A pin outside the range Calibre-Web's
 requirements allow fails that command, so its pull request never merges.
 
+So that Renovate does not propose such a pin at all, the command also
+writes `python/renovate-bounds.json`, a Renovate preset that
+`renovate.json` extends: for each pin that Calibre-Web's requirements, or
+a package the image installs, bound from above, every version range asked
+of it, as `pip check` reads the packages' requirements. Renovate reads it
+from `main`, so a bound lifts once the pull request that moves its source,
+such as a newer Calibre-Web, merges. A pin that asks another for its own
+version, as python-Levenshtein asks Levenshtein, cannot move alone, so
+the two move together, in one pull request, within the first one's
+bounds. A source build's own requirements are
+in its source release alone, so the one such bound, Cython's for lxml, is
+a rule of its own in `renovate.json`.
+
 `python/pins.txt` holds one `package==version` a line, each under a
 comment saying which kind it is: `# upstream leaves it unpinned: <its
 requirement>`, `# needed by <package> …`, for a package a pinned one
@@ -977,7 +990,8 @@ gh variable set CALIBRE_AUTOMERGE --body disabled
   needs a running Docker daemon too, logged in to dhi.io, for
   `docker build --check`.
 - `go run ./cmd/divbast-pins` writes `python/requirements.lock`,
-  `python/build.lock` and `python/files.txt` from the pins, after a change
+  `python/build.lock`, `python/files.txt` and
+  `python/renovate-bounds.json` from the pins, after a change
   to `python/pins.txt` or to the Containerfile's pins. It fills in a
   checksum only when it is empty, and writes `IMAGE_PAIR`: after moving
   `CALIBRE_VERSION`, `CALIBRE_WEB_COMMIT`, Ghostscript's version and tag,

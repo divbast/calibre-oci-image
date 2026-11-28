@@ -479,9 +479,10 @@ or read in upstream's source where the line says so:
 ## Python dependencies
 
 - **`go run ./cmd/divbast-pins`** writes `python/requirements.lock`,
-  `python/build.lock` and `python/files.txt` from what the repository
-  pins: Calibre-Web's `requirements.txt` and `optional-requirements.txt`
-  at `CALIBRE_WEB_COMMIT`, through `python/requirements.in`'s two `-r`
+  `python/build.lock`, `python/files.txt` and
+  `python/renovate-bounds.json` from what the repository pins:
+  Calibre-Web's `requirements.txt` and `optional-requirements.txt` at
+  `CALIBRE_WEB_COMMIT`, through `python/requirements.in`'s two `-r`
   lines, read for Linux and the Containerfile's DHI Python; and
   `python/pins.txt`. It fills in each checksum ARG that is empty
   (Calibre's two, Calibre-Web's, Ghostscript's and unrar's), and writes
@@ -500,6 +501,27 @@ or read in upstream's source where the line says so:
   as does a pin for a package upstream pins with `==`. With PyDrive2 left
   out, pyOpenSSL and six were needed by nothing, and went: 144 packages
   are installed, 29 of them built from source
+- **`python/renovate-bounds.json` is the Renovate preset that keeps a pin
+  inside what asks for it**, which `renovate.json` extends from `main`.
+  For each pins.txt pin, it joins every specifier asked of it:
+  upstream's, for a runtime pin, and each `Requires-Dist` entry naming it,
+  from the per-version JSON PyPI already serves for the lock. Packages of
+  `requirements.lock` bound runtime pins alone, and those of `build.lock`
+  build pins alone. Markers are read as `pip check` reads them: no
+  `extra`, the image's CPython, and either architecture's
+  `platform_machine`. Any other marker variable is an error, and so is a
+  specifier that is not PEP 440's, which Renovate would refuse for the
+  whole repository. A pin gets a rule only when some specifier could
+  refuse a newer version. A pin that asks another, with `==`, for its own
+  version (python-Levenshtein and Levenshtein) makes a group of the two,
+  and the asked pin takes the asker's bounds in place of that `==`, which
+  would hold it for good; a `==` for any other version stays a bound, and
+  a person moves that pair. PyPI gives
+  no `requires_dist` for some old source releases, and for each such
+  package a bound it sets is missed, so the build's `pip check` still
+  catches that pin. A source build's own requirements are in its sdist
+  alone, so a bound one sets, Cython's `<3.3` for lxml, is a hand-written
+  rule in `renovate.json`. Lift it when that build takes a newer one
 - **A yanked release is refused, unless upstream pins it with `==`**, as
   in SABnzbd's tool. A pure-Python package installs from its pure wheel,
   any other from its source release
@@ -532,7 +554,9 @@ input and merges it once every check passes, while `CALIBRE_AUTOMERGE` is
   preset, and the packages of the toolchain and runtimelibs stages,
   grouped here as `DHI build packages`.
 
-A PR that moves Calibre, Calibre-Web, Ghostscript, unrar or a pin runs
+Renovate proposes no pin past `python/renovate-bounds.json`'s bounds,
+nor Cython past `renovate.json`'s own rule. A PR that moves Calibre,
+Calibre-Web, Ghostscript, unrar or a pin runs
 `go run ./cmd/divbast-pins` as a post-upgrade task, which ci's
 `RENOVATE_ALLOWED_COMMANDS` allows, so the locks, the checksums and
 `IMAGE_PAIR` move with it. A new Calibre-Web whose requirements need a pin
