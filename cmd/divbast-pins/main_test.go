@@ -34,8 +34,6 @@ ARG IMAGE_PAIR=
 ARG GHOSTSCRIPT_VERSION=10.08.0
 ARG GHOSTSCRIPT_TAG=10080
 ARG GHOSTSCRIPT_SHA256=
-ARG UNRAR_VERSION=7.3.2
-ARG UNRAR_SHA256=
 ARG RUNTIME_IMAGE=dhi.io/python:3.15.2-debian13@sha256:c6c9414d78bd285be1a4dacfb94ae61732c77019605b1678792823e319b720f6
 FROM dhi.io/python:3.15.2-debian13-dev@sha256:c73e2cb9e8d56cfab7f01b99f67b2c830e84e7397dfe666d8bfaf5a69ad0ce85 AS deps
 FROM ${RUNTIME_IMAGE}
@@ -76,7 +74,6 @@ var downloads = map[string]string{
 	"CALIBRE_SHA256_ARM64":  "https://download.calibre-ebook.com/9.19.0/calibre-9.19.0-arm64.txz",
 	"CALIBRE_WEB_SHA256":    "https://github.com/janeczku/calibre-web/archive/" + commit + ".tar.gz",
 	"GHOSTSCRIPT_SHA256":    "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10080/ghostscript-10.08.0.tar.xz",
-	"UNRAR_SHA256":          "https://www.rarlab.com/rar/unrarsrc-7.3.2.tar.gz",
 }
 
 // sumOf is the sha256 of what the test's servers serve at u: the URL

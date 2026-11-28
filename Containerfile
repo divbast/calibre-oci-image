@@ -28,10 +28,6 @@ ARG GHOSTSCRIPT_SHA256=c20492bc8ebb96c87fa2e52a0926e1cda8cde95d66145e018ac713fed
 # kepubify, built from the commit its tag names
 ARG KEPUBIFY_VERSION=5.0.0
 ARG KEPUBIFY_COMMIT=29f338fe1239f3aa61e9df606fe3c5b9bda30362
-# unrar's source, which RARLAB publishes with no checksum: the one first
-# filled in holds the tarball from then on
-ARG UNRAR_VERSION=7.3.2
-ARG UNRAR_SHA256=f61a1160d6e2ebbda2ad353c8e82f62ab4312f97fde23c6c2c982d25e0014f99
 # The runtime: Docker Hardened Images' Python on Debian 13, with no shell,
 # no package manager, its nonroot user 65532, and pip, setuptools and wheel,
 # which DHI ships in it and nothing here runs. The app runs on its Python,
@@ -569,51 +565,29 @@ RUN --network=none CGO_ENABLED=0 GOFLAGS=-mod=readonly GOTOOLCHAIN=local \
     && grep -qx "kepubify v${KEPUBIFY_VERSION}" /tmp/version \
     && install -D -m 0644 LICENSE /out/doc/LICENSE
 
-# unrar, RARLAB's own, which Calibre-Web runs to read CBR comics: as
-# SABnzbd's image builds it, from the tarball, held to its sha256, linked
-# to the runtime's glibc and libstdc++, so the scan and DHI's updates
-# cover them, with a stack protector, FORTIFY_SOURCE, PIE and full RELRO.
-# upstream's -std=c++11 stays, since setting CXXFLAGS replaces its flags.
-# Its version, from version.hpp, goes to the SBOM.
-FROM toolchain AS unrar
-ARG UNRAR_VERSION
-ARG UNRAR_SHA256
-ADD --checksum=sha256:${UNRAR_SHA256} https://www.rarlab.com/rar/unrarsrc-${UNRAR_VERSION}.tar.gz /tmp/unrar.tar.gz
-SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
-RUN tar -xzf /tmp/unrar.tar.gz -C /tmp \
-    && make -C /tmp/unrar -j"$(nproc)" unrar \
-        CXXFLAGS="-O2 -std=c++11 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIE" \
-        LDFLAGS="-pthread -pie -Wl,-z,relro,-z,now" \
-    && install -D -m 0755 /tmp/unrar/unrar /out/unrar \
-    && install -D -m 0644 /tmp/unrar/license.txt /out/doc/license.txt \
-    && check-elf /out/unrar \
-    && { /out/unrar || true; } >/tmp/banner \
-    && grep -m1 'Alexander Roshal' /tmp/banner \
-    && read -r major minor beta < <(awk '/#define RARVER_MAJOR/ {M=$3} /#define RARVER_MINOR/ {m=$3} /#define RARVER_BETA/ {b=$3} END {print M, m, b}' /tmp/unrar/version.hpp) \
-    && printf '%s %s %s\n' "${major}" "${minor}" "${beta}" >/out/unrar.version
-
 # The SBOMs of what no scanner sees in the image, each component by the
 # identifier the scan matches it by, which ci's divbast-scan reads through
 # the labels below: the libraries and Python packages Calibre's bundle
 # carries, from its sources.json and pyproject.toml, which the scan reports
-# and never blocks on, since DHI's updates never reach them; and the four
-# tools built here, with the jbig2dec inside Ghostscript.
+# and never blocks on, since DHI's updates never reach them; and the tools
+# built here, with the jbig2dec inside Ghostscript. unrar, which the
+# carrier below describes in its own records, comes as the carrier wrote
+# it, with only where it sits in this image added.
 FROM toolchain AS sbom
 ARG IMAGEMAGICK_VERSION
 ARG GHOSTSCRIPT_VERSION
 ARG KEPUBIFY_VERSION
 COPY --from=calibre /sources.json /pyproject.toml /tmp/
-COPY --from=unrar /out/unrar.version /tmp/unrar.version
+COPY --from=ghcr.io/divbast/unrar:latest@sha256:a37d182b01ee0379654a5cbdc3505636272580c55fbf2b867faae7790f217420 /records/sbom.cdx.json /tmp/unrar.cdx.json
 COPY --from=ghostscript /out/jbig2dec.version /tmp/jbig2dec.version
 COPY sbom/sboms.py /tmp/sboms.py
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
-RUN read -r major minor beta </tmp/unrar.version \
-    && read -r jbig2dec </tmp/jbig2dec.version \
+RUN read -r jbig2dec </tmp/jbig2dec.version \
     && install -d /out \
     && python3 -I /tmp/sboms.py \
         --sources /tmp/sources.json \
         --pyproject /tmp/pyproject.toml \
-        --unrar "${major}.${minor}" --unrar-beta "${beta}" \
+        --unrar-sbom /tmp/unrar.cdx.json \
         --imagemagick "${IMAGEMAGICK_VERSION}" \
         --ghostscript "${GHOSTSCRIPT_VERSION}" \
         --jbig2dec "${jbig2dec}" \
@@ -683,7 +657,7 @@ COPY --from=calibre /opt/calibre /check/opt/calibre
 COPY --from=deps /app /check/app
 COPY --from=ghostscript /opt/ghostscript /check/opt/ghostscript
 COPY --from=imagemagick /opt/imagemagick /check/opt/imagemagick
-COPY --from=unrar /out/unrar /check/usr/local/bin/unrar
+COPY --from=ghcr.io/divbast/unrar:latest@sha256:a37d182b01ee0379654a5cbdc3505636272580c55fbf2b867faae7790f217420 --chmod=0755 /unrar /check/usr/local/bin/unrar
 COPY imagemagick/check_policy.py /check/tmp/check_policy.py
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 RUN while read -r f; do \
@@ -776,12 +750,16 @@ COPY --from=deps /app/calibre-web /app/calibre-web
 COPY --from=ghostscript /opt/ghostscript /opt/ghostscript
 COPY --from=imagemagick /opt/imagemagick /opt/imagemagick
 COPY --from=kepubify /out/kepubify /usr/local/bin/kepubify
-COPY --from=unrar /out/unrar /usr/local/bin/unrar
+# unrar, RARLAB's own, which Calibre-Web runs to read CBR comics: built once
+# in divbast/native-tools from its source and attested there. ci's
+# divbast-verify-images checks the attestation of this digest before the
+# image builds, and Renovate moves the digest
+COPY --from=ghcr.io/divbast/unrar:latest@sha256:a37d182b01ee0379654a5cbdc3505636272580c55fbf2b867faae7790f217420 --chmod=0755 /unrar /usr/local/bin/unrar
 # The licences the four tools ship under, beside the binaries' own notices
 COPY --from=ghostscript /out/doc /usr/local/share/doc/ghostscript
 COPY --from=imagemagick /out/doc /usr/local/share/doc/imagemagick
 COPY --from=kepubify /out/doc /usr/local/share/doc/kepubify
-COPY --from=unrar /out/doc /usr/local/share/doc/unrar
+COPY --from=ghcr.io/divbast/unrar:latest@sha256:a37d182b01ee0379654a5cbdc3505636272580c55fbf2b867faae7790f217420 /doc/unrar /usr/local/share/doc/unrar
 COPY --from=sbom /out/calibre-bundle.cdx.json /out/tools.cdx.json /usr/local/share/divbast/
 # The first-start helpers PID 1 runs, one in Calibre's Python and one in
 # Calibre-Web's

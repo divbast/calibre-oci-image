@@ -63,15 +63,18 @@ repository alone.
   the base lists its own packages and the scan reads them.
 - `ghostscript` and `imagemagick` build Ghostscript and ImageMagick, with
   which Calibre-Web makes covers and thumbnails, a PDF's first page among
-  them. `unrar` builds RARLAB's unrar, with which Calibre-Web reads CBR
-  comics. All three link to the base's libraries and the packages above,
+  them. All three link to the base's libraries and the packages above,
   so Docker's updates of those reach them, and each is hardened and
   checked: position-independent, bound at load, with a read-only
   relocation table. `kepubify` builds kepubify, with which Calibre-Web
   makes books for Kobo e-readers, as a static Go program. ImageMagick and
   kepubify are fetched by commit, and the build checks that their release
-  tag still names it; Ghostscript and unrar come as tarballs, held to the
-  sha256 the Containerfile names.
+  tag still names it; Ghostscript comes as a tarball, held to the sha256
+  the Containerfile names. RARLAB's unrar, with which Calibre-Web reads
+  CBR comics, is not built here: it is copied from the
+  `ghcr.io/divbast/unrar` image of
+  [divbast/native-tools](https://github.com/divbast/native-tools), by
+  digest, which the build checks the attestation of first.
 - `sbom` writes two SBOMs, which the scan reads: see
   [The scan](#the-scan).
 - `probe` builds `divbast-calibre`, the image's own command and PID 1, a
@@ -903,7 +906,7 @@ The scan fails a change only on a HIGH or CRITICAL finding that the
 published image does not have already. No image scan can tell what is in
 Calibre's own build, which carries its own libraries and Python packages,
 or what ImageMagick, Ghostscript, kepubify and unrar are, since they are
-built here. So the image names them in two SBOMs, which its
+built here, or come from a carrier. So the image names them in two SBOMs, which its
 `io.github.divbast.scan.sboms` label declares, and the scan judges them by
 those:
 
@@ -914,7 +917,8 @@ those:
   upstream's own signed build of those libraries, which this repository
   cannot patch, so the scan lists its findings and never fails on them.
 - `/usr/local/share/divbast/tools.cdx.json`: ImageMagick, Ghostscript and
-  the jbig2dec inside it, kepubify and unrar. Its findings block as every
+  the jbig2dec inside it, kepubify and unrar, whose component is
+  native-tools' own. Its findings block as every
   other finding does.
 
 ## Dependency updates
@@ -935,16 +939,13 @@ check passes:
   the build checks that the tag still names the commit;
 - each Ghostscript release, with the checksum of its tarball filled in
   the same way;
-- each unrar tarball RARLAB's page links, betas included. RARLAB
-  publishes no checksum, so the pull request records the sha256 of the
-  tarball RARLAB served when it was made, and the build holds the
-  download to it from then on;
+- each new digest of the unrar image from divbast/native-tools;
 - each line of `python/pins.txt`;
 - the Docker Hardened Images, with the Python runtime and its `-dev`
   image in one pull request, and the packages of the toolchain and
   runtimelibs stages, all in one pull request.
 
-A pull request that moves Calibre, Calibre-Web, Ghostscript, unrar or a
+A pull request that moves Calibre, Calibre-Web, Ghostscript or a
 pin runs `go run ./cmd/divbast-pins` too, which fills in the checksums the
 update emptied, writes the Python locks again from Calibre-Web's
 requirements at the new commit and the pins, and writes `IMAGE_PAIR`, so
@@ -995,7 +996,7 @@ gh variable set CALIBRE_AUTOMERGE --body disabled
   to `python/pins.txt` or to the Containerfile's pins. It fills in a
   checksum only when it is empty, and writes `IMAGE_PAIR`: after moving
   `CALIBRE_VERSION`, `CALIBRE_WEB_COMMIT`, Ghostscript's version and tag,
-  or `UNRAR_VERSION` by hand, empty its checksums, then run it.
+  by hand, empty its checksums, then run it.
 
 The recipes that call GitHub, pinact's and zizmor's, read a fine-grained
 personal access token from `GITHUB_TOKEN`: divbast/ci's README says which,
