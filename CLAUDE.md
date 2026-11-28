@@ -509,8 +509,14 @@ or read in upstream's source where the line says so:
   `requirements.lock` bound runtime pins alone, and those of `build.lock`
   build pins alone. Markers are read as `pip check` reads them: no
   `extra`, the image's CPython, and either architecture's
-  `platform_machine`. Any other marker variable is an error. A pin gets a
-  rule only when some specifier could refuse a newer version. PyPI gives
+  `platform_machine`. Any other marker variable is an error, and so is a
+  specifier that is not PEP 440's, which Renovate would refuse for the
+  whole repository. A pin gets a rule only when some specifier could
+  refuse a newer version. A pin that asks another, with `==`, for its own
+  version (python-Levenshtein and Levenshtein) makes a group of the two,
+  and the asked pin takes the asker's bounds in place of that `==`, which
+  would hold it for good; a `==` for any other version stays a bound, and
+  a person moves that pair. PyPI gives
   no `requires_dist` for some old source releases, and for each such
   package a bound it sets is missed, so the build's `pip check` still
   catches that pin. A source build's own requirements are in its sdist

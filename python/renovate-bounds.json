@@ -458,7 +458,7 @@
       "allowedVersions": "<4.30.0,>=3.2.0"
     },
     {
-      "description": "levenshtein: python-Levenshtein 0.27.5 requires ==0.27.5.",
+      "description": "levenshtein: python-Levenshtein 0.27.5 requires ==0.27.5, its own version, so it moves with python-Levenshtein, within python-Levenshtein's bounds.",
       "matchManagers": [
         "custom.regex"
       ],
@@ -468,7 +468,7 @@
       "matchPackageNames": [
         "levenshtein"
       ],
-      "allowedVersions": "==0.27.5"
+      "allowedVersions": "<0.28.0,>=0.12.0"
     },
     {
       "description": "lxml: upstream asks for >=4.9.1,<6.2.0; free-proxy 1.3.1 requires <7,>=5.0.",
@@ -1054,6 +1054,20 @@
         "wrapt"
       ],
       "allowedVersions": "<3,>=1.16"
+    },
+    {
+      "description": "python-Levenshtein 0.27.5 requires levenshtein at its own version, so the two move together, in one pull request.",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchDatasources": [
+        "pypi"
+      ],
+      "matchPackageNames": [
+        "python-Levenshtein",
+        "levenshtein"
+      ],
+      "groupName": "python-Levenshtein and levenshtein"
     }
   ]
 }

@@ -119,7 +119,7 @@ func Generate(ctx context.Context, src Sources, root *os.Root) (out map[string][
 	if err != nil {
 		return nil, nil, err
 	}
-	bounds, err := Bounds(pins, reqs, locked, backends, DistEnvs(args.PythonFullVersion))
+	bounds, groups, err := Bounds(pins, reqs, locked, backends, DistEnvs(args.PythonFullVersion))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -151,7 +151,7 @@ func Generate(ctx context.Context, src Sources, root *os.Root) (out map[string][
 			"and checks it before pip reads anything, so no package's code runs with the network on.",
 			again,
 		}, slices.Concat(locked, backends)),
-		WriteBounds(&limits, bounds),
+		WriteBounds(&limits, bounds, groups),
 	)
 	if err != nil {
 		return nil, nil, err

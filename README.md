@@ -957,7 +957,10 @@ writes `python/renovate-bounds.json`, a Renovate preset that
 a package the image installs, bound from above, every version range asked
 of it, as `pip check` reads the packages' requirements. Renovate reads it
 from `main`, so a bound lifts once the pull request that moves its source,
-such as a newer Calibre-Web, merges. A source build's own requirements are
+such as a newer Calibre-Web, merges. A pin that asks another for its own
+version, as python-Levenshtein asks Levenshtein, cannot move alone, so
+the two move together, in one pull request, within the first one's
+bounds. A source build's own requirements are
 in its source release alone, so the one such bound, Cython's for lxml, is
 a rule of its own in `renovate.json`.
 
